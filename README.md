@@ -1,4 +1,4 @@
-# [INFO] INSTRUCCIONES DE USO - Auditoría Empresarial Completa
+# INSTRUCCIONES DE USO - Auditoría Empresarial Completa
 
 ##  Descripción
 
