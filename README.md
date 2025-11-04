@@ -6,7 +6,7 @@ Script avanzado de PowerShell para realizar auditorías completas de seguridad e
 
 ---
 
-## [START] Ejecución Rápida (Un Solo Click)
+## Ejecución Rápida (Un Solo Click)
 
 ### Método 1: Doble Click (Recomendado)
 1. Localizar el archivo `Auditoria_Empresarial_Completa.ps1`
@@ -47,10 +47,10 @@ $servers | ForEach-Object {
 ### Privilegios Recomendados
 | Nivel de Privilegio | Información Disponible |
 |---------------------|------------------------|
-| **[USER] Usuario Normal** | [OK] Procesos actuales<br>[OK] Conexiones de red<br>[OK] Archivos accesibles<br> Eventos de seguridad (limitado)<br> Configuración del sistema |
-| **[PRIV] Administrador** | [OK] **TODO lo anterior +**<br>[OK] Eventos de seguridad completos<br>[OK] Configuración de sistema<br>[OK] Logs de auditoría<br>[OK] Drivers y kernel<br>[OK] Información de todos los usuarios |
+| **[USER] Usuario Normal** | Procesos actuales<br> Conexiones de red<br>[OK] Archivos accesibles<br> Eventos de seguridad (limitado)<br> Configuración del sistema |
+| **[PRIV] Administrador** | **TODO lo anterior +**<br> Eventos de seguridad completos<br> Configuración de sistema<br>[OK] Logs de auditoría<br>[OK] Drivers y kernel<br> Información de todos los usuarios |
 
-**[!] RECOMENDACIÓN:** Ejecutar como **Administrador** para auditoría completa.
+**RECOMENDACIÓN:** Ejecutar como **Administrador** para auditoría completa.
 
 ---
 
@@ -65,69 +65,69 @@ El script ejecuta **10 módulos** de auditoría que cubren todas las áreas crí
 - Configuración de zona horaria
 
 ### 2.  Usuarios y Permisos
-- [OK] Usuarios locales y su configuración
-- [OK] Cuentas sin contraseña (CRÍTICO)
-- [OK] Usuarios con privilegios de administrador
-- [OK] Grupos privilegiados (RDP, Backup Operators)
-- [OK] Cuentas habilitadas sin uso
+- Usuarios locales y su configuración
+- Cuentas sin contraseña (CRÍTICO)
+- Usuarios con privilegios de administrador
+- Grupos privilegiados (RDP, Backup Operators)
+- Cuentas habilitadas sin uso
 
 ### 3.  Procesos y Servicios
-- [OK] Procesos en ejecución con firma digital
-- [OK] Procesos sin ruta de archivo (MUY SOSPECHOSO)
-- [OK] Línea de comandos de todos los procesos
-- [OK] Detección de comandos codificados (Base64)
-- [OK] Servicios automáticos
-- [OK] Patrones maliciosos (Mimikatz, Invoke-Expression, etc.)
+- Procesos en ejecución con firma digital
+- Procesos sin ruta de archivo (MUY SOSPECHOSO)
+- Línea de comandos de todos los procesos
+- Detección de comandos codificados (Base64)
+- Servicios automáticos
+- Patrones maliciosos (Mimikatz, Invoke-Expression, etc.)
 
 ### 4.  Red y Conexiones
-- [OK] Conexiones TCP/UDP activas
-- [OK] Puertos en escucha (superficie de ataque)
-- [OK] Conexiones a puertos sospechosos (4444, 8080, etc.)
-- [OK] Procesos del sistema con conexiones externas (CRÍTICO)
-- [OK] Caché DNS (dominios visitados)
-- [OK] Configuración de adaptadores de red
+- Conexiones TCP/UDP activas
+- Puertos en escucha (superficie de ataque)
+- Conexiones a puertos sospechosos (4444, 8080, etc.)
+- Procesos del sistema con conexiones externas (CRÍTICO)
+- Caché DNS (dominios visitados)
+- Configuración de adaptadores de red
 
 ### 5.  Logs y Eventos de Seguridad
-- [OK] Intentos de login fallidos (Event ID 4625)
-- [OK] Cuentas bloqueadas (Event ID 4740)
-- [OK] Eventos de PowerShell (ScriptBlock Logging)
-- [OK] Comandos codificados en PowerShell
-- [OK] Eventos críticos del sistema y aplicaciones
+- Intentos de login fallidos (Event ID 4625)
+- Cuentas bloqueadas (Event ID 4740)
+- Eventos de PowerShell (ScriptBlock Logging)
+- Comandos codificados en PowerShell
+- Eventos críticos del sistema y aplicaciones
 
 ### 6.  Archivos y Persistencia
-- [OK] Archivos modificados en últimas 24 horas
-- [OK] Archivos ocultos sospechosos
-- [OK] Persistencia en Run Keys del registro
-- [OK] Tareas programadas activas
-- [OK] Verificación del archivo HOSTS
-- [OK] Redirecciones maliciosas en HOSTS
+- Archivos modificados en últimas 24 horas
+- Archivos ocultos sospechosos
+- Persistencia en Run Keys del registro
+- Tareas programadas activas
+- Verificación del archivo HOSTS
+- Redirecciones maliciosas en HOSTS
 
 ### 7.  Configuraciones de Seguridad
-- [OK] Política de ejecución de PowerShell
-- [OK] Perfiles del firewall (habilitado/deshabilitado)
-- [OK] Reglas del firewall activas
-- [OK] Estado de Windows Defender
-- [OK] Actualización de firmas de antivirus
-- [OK] Recursos compartidos de red
-- [OK] Configuración de UAC (User Account Control)
+- Política de ejecución de PowerShell
+- Perfiles del firewall (habilitado/deshabilitado)
+- Reglas del firewall activas
+- Estado de Windows Defender
+- Actualización de firmas de antivirus
+- Recursos compartidos de red
+- Configuración de UAC (User Account Control)
 
 ### 8.  Detección de LOLBAS
 (Living Off the Land Binaries - Binarios legítimos usados maliciosamente)
-- [OK] Uso de certutil, regsvr32, mshta, bitsadmin
-- [OK] Uso de rundll32, wmic, PowerShell con argumentos sospechosos
-- [OK] Detección de técnicas de evasión
+- Uso de certutil, regsvr32, mshta, bitsadmin
+- Uso de rundll32, wmic, PowerShell con argumentos sospechosos
+- Detección de técnicas de evasión
 
 ### 9.  Drivers y Módulos del Kernel
-- [OK] Drivers instalados en el sistema
-- [OK] Drivers sin firma digital (posibles rootkits)
-- [OK] Información de proveedor y versión
+- Drivers instalados en el sistema
+- Drivers sin firma digital (posibles rootkits)
+- Información de proveedor y versión
 
 ### 10.  Hardware y Configuración
-- [OK] Información del BIOS
-- [OK] Discos físicos y su estado de salud
-- [OK] Particiones y espacio disponible
-- [OK] Adaptadores de red (hardware)
-- [OK] Variables de entorno
+- Información del BIOS
+- Discos físicos y su estado de salud
+- Particiones y espacio disponible
+- Adaptadores de red (hardware)
+- Variables de entorno
 
 ---
 
@@ -229,11 +229,11 @@ El script clasifica las amenazas en 4 niveles:
 ### Ejemplos de Amenazas Detectadas
 
 #### [CRITICO] CRÍTICAS (Acción Inmediata)
-- [OK] **Proceso del sistema con conexión externa**
+- **Proceso del sistema con conexión externa**
   - Ejemplo: `svchost.exe` conectado a IP 203.0.113.42
   - **Acción:** Investigar proceso, verificar malware
   
-- [OK] **Comando codificado en PowerShell**
+- **Comando codificado en PowerShell**
   - Ejemplo: `powershell.exe -enc <base64>`
   - **Acción:** Decodificar comando, analizar payload
   
@@ -241,21 +241,21 @@ El script clasifica las amenazas en 4 niveles:
   - **Acción:** Verificar si fue deshabilitado por atacante
 
 #### [ALTO] ALTAS (Prioridad)
-- [OK] **Conexión a puerto sospechoso**
+- **Conexión a puerto sospechoso**
   - Ejemplo: Conexión a puerto 4444 (Metasploit)
   - **Acción:** Identificar proceso, verificar C2
   
-- [OK] **Proceso sin ruta de archivo**
+- **Proceso sin ruta de archivo**
   - Ejemplo: Proceso en memoria sin archivo en disco
   - **Acción:** Posible process injection o hollow
   
-- [OK] **Usuario sin contraseña**
+  **Usuario sin contraseña**
   - **Acción:** Establecer contraseña inmediatamente
 
 #### [MEDIO] MEDIAS
-- [OK] **Archivo ejecutable oculto**
-- [OK] **Run Key con script**
-- [OK] **Recurso compartido sin restricciones**
+- **Archivo ejecutable oculto**
+- **Run Key con script**
+- **Recurso compartido sin restricciones**
 
 ---
 
@@ -424,7 +424,7 @@ Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy RemoteSigned
 ##  Consideraciones Legales
 
 ### Uso Autorizado
-[OK] **PERMITIDO:**
+**PERMITIDO:**
 - Auditorías en sistemas de tu organización
 - Análisis de sistemas con permiso explícito
 - Evaluaciones de seguridad autorizadas
@@ -441,26 +441,26 @@ Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy RemoteSigned
 ##  Changelog
 
 ### Versión 2.0 (2025-11-03)
-- [OK] Detección avanzada de IOCs (Indicadores de Compromiso)
-- [OK] Exportación multi-formato (JSON, CSV, TXT)
-- [OK] Análisis de LOLBAS (Living Off the Land)
-- [OK] Detección de comandos codificados
-- [OK] Resumen ejecutivo con nivel de riesgo
-- [OK] 10 módulos de auditoría completos
-- [OK] Barra de progreso visual
-- [OK] Manejo robusto de errores
-- [OK] Documentación extensa con comentarios
+- Detección avanzada de IOCs (Indicadores de Compromiso)
+- Exportación multi-formato (JSON, CSV, TXT)
+- Análisis de LOLBAS (Living Off the Land)
+- Detección de comandos codificados
+- Resumen ejecutivo con nivel de riesgo
+- 10 módulos de auditoría completos
+- Barra de progreso visual
+- Manejo robusto de errores
+- Documentación extensa con comentarios
 
 ---
 
-##  Licencia
+##  Licencia MIT
 
-Este script es propiedad de [Tu Organización] y está destinado únicamente para uso interno.
+Este script es propiedad de Sammi De Blas Kalloub y está destinado únicamente para uso interno.
 
 **Confidencial - No distribuir sin autorización**
 
 ---
 
-**¿Preguntas?** Contacta al equipo de Ciberseguridad.
+**¿Preguntas?** Contacta al equipo de Ciberseguridad de tu empresa 
 
 
