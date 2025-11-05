@@ -131,53 +131,53 @@ El script ejecuta **10 módulos** de auditoría que cubren todas las áreas crí
 
 ---
 
-## [DIR] Estructura de Resultados
+## Estructura de Resultados
 
 Al finalizar, el script crea una carpeta con la siguiente estructura:
 
 ```
-Auditoria_20250102_143022/
+Auditoria_fecha
 
   RESUMEN_EJECUTIVO.txt          ←  LEER PRIMERO
   AMENAZAS_DETECTADAS.json/csv/txt
   auditoria.log
 
- [DIR] 01_Sistema/
+ 01_Sistema/
     informacion_sistema.[json|csv|txt]
 
- [DIR] 02_Usuarios/
+ 02_Usuarios/
     usuarios_locales.*
     administradores_locales.*
     grupo_Remote_Desktop_Users.*
 
- [DIR] 03_Procesos/
+ 03_Procesos/
     procesos_activos.*
     procesos_sin_ruta.*           ← [!] REVISAR (SOSPECHOSO)
     procesos_con_comandos.*
     servicios.*
 
- [DIR] 04_Red/
+ 04_Red/
     conexiones_tcp.*
     conexiones_establecidas.*      ← [!] REVISAR conexiones externas
     puertos_escucha.*
     udp_endpoints.*
     dns_cache.*
 
- [DIR] 05_Eventos/
+ 05_Eventos/
     logins_fallidos.*              ← [!] REVISAR (Ataques de fuerza bruta)
     cuentas_bloqueadas.*
     powershell_scriptblock.*
     eventos_aplicacion.*
     eventos_sistema.*
 
- [DIR] 06_Archivos/
+ 06_Archivos/
     archivos_modificados_24h.*
     archivos_ocultos_sospechosos.* ← [!] REVISAR
     persistencia_run_keys.*        ← [!] REVISAR (Persistencia)
     tareas_programadas.*
     archivo_hosts.*
 
- [DIR] 07_Configuracion/
+ 07_Configuracion/
     powershell_execution_policy.*
     firewall_perfiles.*
     firewall_reglas.*
@@ -185,15 +185,15 @@ Auditoria_20250102_143022/
     recursos_compartidos.*
     uac_configuracion.*
 
- [DIR] 08_LOLBAS/
+ 08_LOLBAS/
     procesos_lolbas_activos.*      ← [!] REVISAR
     eventos_lolbas.*
 
- [DIR] 09_Drivers/
+ 09_Drivers/
     drivers_instalados.*
     drivers_sin_firma.*            ← [!] REVISAR (Posibles rootkits)
 
- [DIR] 10_Hardware/
+ 10_Hardware/
      bios_info.*
      discos_fisicos.*
      volumenes.*
