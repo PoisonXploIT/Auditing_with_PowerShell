@@ -37,7 +37,7 @@ $servers | ForEach-Object {
 
 ---
 
-## [PRIV] Requisitos del Sistema
+## Requisitos del Sistema
 
 ### Requisitos Obligatorios
 - **Sistema Operativo:** Windows 10, Windows 11, Windows Server 2016/2019/2022
@@ -47,8 +47,8 @@ $servers | ForEach-Object {
 ### Privilegios Recomendados
 | Nivel de Privilegio | Información Disponible |
 |---------------------|------------------------|
-| **[USER] Usuario Normal** | Procesos actuales<br> Conexiones de red<br>[OK] Archivos accesibles<br> Eventos de seguridad (limitado)<br> Configuración del sistema |
-| **[PRIV] Administrador** | **TODO lo anterior +**<br> Eventos de seguridad completos<br> Configuración de sistema<br>[OK] Logs de auditoría<br>[OK] Drivers y kernel<br> Información de todos los usuarios |
+| **Usuario Normal** | Procesos actuales<br> Conexiones de red<br>Archivos accesibles<br> Eventos de seguridad (limitado)<br> Configuración del sistema |
+| **Administrador** | **TODO lo anterior +**<br> Eventos de seguridad completos<br> Configuración de sistema<br> Logs de auditoría<br> Drivers y kernel<br> Información de todos los usuarios |
 
 **RECOMENDACIÓN:** Ejecutar como **Administrador** para auditoría completa.
 
@@ -58,7 +58,7 @@ $servers | ForEach-Object {
 
 El script ejecuta **10 módulos** de auditoría que cubren todas las áreas críticas:
 
-### 1. [DIR] Información del Sistema
+### 1.Información del Sistema
 - Sistema operativo y versión
 - Hardware (CPU, RAM, discos)
 - Fecha de instalación y último reinicio
