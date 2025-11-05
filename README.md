@@ -31,7 +31,7 @@ Invoke-Command -ComputerName SERVIDOR01 -FilePath ".\Auditoria_Empresarial_Compl
 # Ejecutar en múltiples servidores
 $servers = Get-Content "servidores.txt"
 $servers | ForEach-Object {
-    Invoke-Command -ComputerName $_ -FilePath ".\Auditoria_Empresarial_Completa.ps1"
+    Invoke-Command -ComputerName $_ -FilePath ".\Advanced Powershell Script.ps1"
 }
 ```
 
