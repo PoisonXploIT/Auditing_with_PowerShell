@@ -20,7 +20,7 @@ Script avanzado de PowerShell para realizar auditorías completas de seguridad e
 cd C:\ruta\del\script
 
 # Ejecutar el script
-.\Auditoria_Empresarial_Completa.ps1
+.\Advanced PowerShell script.ps1
 ```
 
 ### Método 3: Ejecución Remota (Para múltiples servidores)
