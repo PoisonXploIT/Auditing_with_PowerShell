@@ -415,9 +415,8 @@ Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy RemoteSigned
 - **Splunk/ELK** - Análisis centralizado de logs
 
 ### Contacto y Soporte
--  Email: seguridad@empresa.com
--  Portal: https://seguridad.empresa.com
--  Incidentes: +1-800-SECURITY
+-  Email: sammideblas@proton.me
+
 
 ---
 
@@ -455,9 +454,9 @@ Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy RemoteSigned
 
 ##  Licencia MIT
 
-Este script es propiedad de Sammi De Blas Kalloub y está destinado únicamente para uso interno.
+Este script es propiedad de Sammi De Blas Kalloub 
 
-**Confidencial - No distribuir sin autorización**
+**Libre Distribucion**
 
 ---
 
