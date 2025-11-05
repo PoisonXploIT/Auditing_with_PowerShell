@@ -207,9 +207,9 @@ Cada módulo genera **3 archivos** con la misma información en diferentes forma
 
 | Formato | Extensión | Uso Recomendado |
 |---------|-----------|-----------------|
-| **JSON** | `.json` | [OK] Análisis automatizado<br>[OK] Integración con SIEM<br>[OK] Scripts de procesamiento |
-| **CSV** | `.csv` | [OK] Análisis en Excel<br>[OK] Filtrado y ordenamiento<br>[OK] Reportes ejecutivos |
-| **TXT** | `.txt` | [OK] Lectura humana<br>[OK] Revisión rápida<br>[OK] Documentación |
+| **JSON** | `.json` | Análisis automatizado<br> Integración con SIEM<br>[OK] Scripts de procesamiento |
+| **CSV** | `.csv` | Análisis en Excel<br>[OK] Filtrado y ordenamiento<br>[OK] Reportes ejecutivos |
+| **TXT** | `.txt` | Lectura humana<br>[OK] Revisión rápida<br> Documentación |
 
 ---
 
@@ -223,7 +223,7 @@ El script clasifica las amenazas en 4 niveles:
 |-------|-------|-------------|------------------|
 | **CRITICAL** | [CRITICO] | Amenaza crítica confirmada | [!] **INVESTIGAR INMEDIATAMENTE**<br>Posible compromiso activo |
 | **HIGH** | [ALTO] | Amenaza de alta prioridad | [!] **INVESTIGAR EN 24 HORAS**<br>Riesgo significativo |
-| **MEDIUM** | [MEDIO] | Amenaza moderada | ⏰ **INVESTIGAR EN 1 SEMANA**<br>Configuración insegura |
+| **MEDIUM** | [MEDIO] | Amenaza moderada |**INVESTIGAR EN 1 SEMANA**<br>Configuración insegura |
 | **LOW** |  | Amenaza de baja prioridad | [INFO] **DOCUMENTAR**<br>Revisión recomendada |
 
 ### Ejemplos de Amenazas Detectadas
