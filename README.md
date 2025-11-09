@@ -207,9 +207,9 @@ Cada módulo genera **3 archivos** con la misma información en diferentes forma
 
 | Formato | Extensión | Uso Recomendado |
 |---------|-----------|-----------------|
-| **JSON** | `.json` | Análisis automatizado<br> Integración con SIEM<br>[OK] Scripts de procesamiento |
-| **CSV** | `.csv` | Análisis en Excel<br>[OK] Filtrado y ordenamiento<br>[OK] Reportes ejecutivos |
-| **TXT** | `.txt` | Lectura humana<br>[OK] Revisión rápida<br> Documentación |
+| **JSON** | `.json` | Análisis automatizado<br> Integración con SIEM<br> Scripts de procesamiento |
+| **CSV** | `.csv` | Análisis en Excel<br>[OK] Filtrado y ordenamiento<br> Reportes ejecutivos |
+| **TXT** | `.txt` | Lectura humana<br> Revisión rápida<br> Documentación |
 
 ---
 
