@@ -415,7 +415,7 @@ Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy RemoteSigned
 - **Splunk/ELK** - Análisis centralizado de logs
 
 ### Contacto y Soporte
--  Email: sammideblas@proton.me
+-  Email: analista@sammideblas.com
 
 
 ---
