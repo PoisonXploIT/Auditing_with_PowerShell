@@ -1,3 +1,5 @@
+![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?style=flat&logo=powershell) ![License](https://img.shields.io/badge/License-MIT-green) ![Platform](https://img.shields.io/badge/Platform-Windows-0078D4?style=flat&logo=windows)
+
 # INSTRUCCIONES DE USO - Auditoría Empresarial Completa
 
 ##  Descripción
@@ -463,3 +465,8 @@ Este script es propiedad de Sammi De Blas Kalloub
 **¿Preguntas?** Contacta al equipo de Ciberseguridad de tu empresa 
 
 
+
+
+## License
+
+MIT License -- see [LICENSE](LICENSE) for details.
