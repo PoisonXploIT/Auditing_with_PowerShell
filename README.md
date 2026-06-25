@@ -1,5 +1,7 @@
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?style=flat&logo=powershell) ![License](https://img.shields.io/badge/License-MIT-green) ![Platform](https://img.shields.io/badge/Platform-Windows-0078D4?style=flat&logo=windows)
 
+> **Nota:** Los PDFs de documentacion se han movido a [GitHub Releases](https://github.com/PoisonXploIT/Auditing_with_PowerShell/releases) para mantener el repo ligero.
+
 # INSTRUCCIONES DE USO - Auditoría Empresarial Completa
 
 ##  Descripción
@@ -11,7 +13,7 @@ Script avanzado de PowerShell para realizar auditorías completas de seguridad e
 ## Ejecución Rápida (Un Solo Click)
 
 ### Método 1: Doble Click (Recomendado)
-1. Localizar el archivo `Auditoria_Empresarial_Completa.ps1`
+1. Localizar el archivo `Invoke-SecurityAudit.ps1`
 2. **Clic derecho** en el archivo
 3. Seleccionar **"Ejecutar con PowerShell"**
 4. Si aparece advertencia de seguridad, presionar **"S"** para continuar
@@ -22,18 +24,18 @@ Script avanzado de PowerShell para realizar auditorías completas de seguridad e
 cd C:\ruta\del\script
 
 # Ejecutar el script
-.\Advanced PowerShell script.ps1
+.\Invoke-SecurityAudit.ps1
 ```
 
 ### Método 3: Ejecución Remota (Para múltiples servidores)
 ```powershell
 # Ejecutar en servidor remoto
-Invoke-Command -ComputerName SERVIDOR01 -FilePath ".\Auditoria_Empresarial_Completa.ps1"
+Invoke-Command -ComputerName SERVIDOR01 -FilePath ".\Invoke-SecurityAudit.ps1"
 
 # Ejecutar en múltiples servidores
 $servers = Get-Content "servidores.txt"
 $servers | ForEach-Object {
-    Invoke-Command -ComputerName $_ -FilePath ".\Advanced Powershell Script.ps1"
+    Invoke-Command -ComputerName $_ -FilePath ".\Invoke-SecurityAudit.ps1"
 }
 ```
 
@@ -337,7 +339,7 @@ Get-Process -Id $parentPID
 # Crear tarea programada que ejecute auditoría semanalmente
 
 $action = New-ScheduledTaskAction -Execute "PowerShell.exe" `
-    -Argument "-ExecutionPolicy Bypass -File C:\Auditoria\Auditoria_Empresarial_Completa.ps1"
+    -Argument "-ExecutionPolicy Bypass -File C:\Auditoria\Invoke-SecurityAudit.ps1"
 
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At 2:00AM
 
