@@ -39,6 +39,39 @@ $servers | ForEach-Object {
 }
 ```
 
+### Método 4: Interfaz Web (v3.0)
+
+La versión 3.0 incluye una interfaz web para visualizar auditorías existentes y ejecutar nuevas auditorías con progreso en vivo.
+
+```powershell
+# 1. Crear entorno virtual e instalar dependencias
+cd ui
+python -m venv .venv
+.\.venv\Scripts\pip install -r requirements.txt
+
+# 2. Arrancar el servidor
+.\.venv\Scripts\python -m uvicorn main:app --host 127.0.0.1 --port 8766
+
+# 3. Abrir http://127.0.0.1:8766 en el navegador
+```
+
+La interfaz permite:
+- Ver el panel general con nivel de riesgo, KPIs y gráfico de severidades
+- Navegar el historial de auditorías generadas
+- Explorar los datos de cada módulo (tablas interactivas)
+- Ejecutar una nueva auditoría con barra de progreso en vivo
+- Ejecutar como administrador (eleva privilegios con UAC)
+
+#### Ejecución headless (automatización)
+
+El script acepta parámetros para ejecutarse sin interacción, usados internamente por la interfaz web:
+
+```powershell
+.\Invoke-SecurityAudit.ps1 -Headless -ResultPath C:\Auditorias -StatusFile C:\Auditorias\status.json
+```
+
+`-StatusFile` recibe un JSON de progreso (módulo, porcentaje, amenazas, errores) que la interfaz lee para mostrar el avance en tiempo real.
+
 ---
 
 ## Requisitos del Sistema
@@ -442,6 +475,13 @@ Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy RemoteSigned
 ---
 
 ##  Changelog
+
+### Versión 3.0 (2026-09-16)
+- Interfaz web (FastAPI + JS vanilla) para visualizar auditorías y ejecutar nuevas con progreso en vivo
+- Endpoints API: listado, detalle, módulos, ejecución y cancelación
+- Modo headless con `-Headless`, `-ResultPath` y `-StatusFile`
+- Archivo de estado de ejecución en `.runs/` para seguimiento en tiempo real
+- Detección de severidades y nivel de riesgo en el panel general
 
 ### Versión 2.0 (2025-11-03)
 - Detección avanzada de IOCs (Indicadores de Compromiso)

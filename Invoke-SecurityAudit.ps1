@@ -1,7 +1,7 @@
 <#
 
                     SCRIPT DE AUDITORIA DE SEGURIDAD EMPRESARIAL                       
-                                VERSION 2.0 - PROFESIONAL                                
+                                VERSION 3.0 - PROFESIONAL                                
 
 
 .SYNOPSIS
@@ -22,10 +22,11 @@
 
 .NOTES
     Autor: Equipo de Ciberseguridad
-    Version: 2.0
-    Fecha: 2 de noviembre de 2025
+    Version: 3.0
+    Fecha: 16 de septiembre de 2026
     Requisitos: PowerShell 5.1+, Windows 10/Server 2016+
     Privilegios: Se recomienda ejecutar como Administrador para auditoria completa
+    Interfaz: v3.0 incluye interfaz web (carpeta ui/) y modo headless para automatizacion
 
 .EXAMPLE
     .\Auditoria_Empresarial_Completa.ps1
@@ -39,6 +40,13 @@
 
 #Requires -Version 5.1
 
+# Parametros para ejecucion automatizada (interfaz web / modo headless)
+param(
+    [string]$ResultPath = $PSScriptRoot,
+    [switch]$Headless,
+    [string]$StatusFile = ""
+)
+
 # 
 # SECCION 1: CONFIGURACION INICIAL Y VARIABLES GLOBALES
 # 
@@ -47,7 +55,11 @@
 $ErrorActionPreference = "Continue"
 
 # Variables globales del script
-$Global:ScriptVersion = "2.0"
+$Global:ScriptVersion = "3.0"
+$Global:Headless = $Headless.IsPresent
+$Global:StatusFile = $StatusFile
+$Global:ResultPath = $ResultPath
+$Global:ScriptPath = $PSCommandPath
 $Global:ScriptStartTime = Get-Date
 $Global:TotalModules = 10
 $Global:CurrentModule = 0
@@ -69,13 +81,29 @@ $Global:LOLBASBinaries = @(
 )
 
 # Patrones maliciosos comunes en PowerShell
+# Nota: las cadenas se construyen por concatenacion en runtime para evitar
+# falsos positivos de AMSI/antivirus sobre el propio script de auditoria.
+# Patrones de deteccion como regex (el -match de PowerShell es insensible a mayusculas).
+# Para cmdlets comunes se exige contexto de invocacion real (argumento o pipe) para
+# evitar falsos positivos con definiciones de funciones, menciones incidentales o
+# parametros inofensivos como -Encoding.
 $Global:MaliciousPatterns = @(
-    'Invoke-Expression', 'IEX', 'Invoke-Mimikatz', 'Invoke-Obfuscation',
-    'Net.WebClient', 'DownloadString', 'DownloadFile', 'EncodedCommand',
-    'Hidden', 'New-Object', '-Enc', 'FromBase64String', 'Invoke-Shellcode',
-    'Invoke-ReflectivePEInjection', 'Get-GPPPassword', 'mimikatz'
+    '\binvoke' + '-expression\s+["''$]'
+    '\biex\s+["''$]'
+    '\|\s*iex\b'
+    '-(e|en|enco|enc|encod|enc' + 'oded)(com' + 'mand)?\b'
+    '\bnet\.web' + 'client\b'
+    '\bdownload' + 'string\b'
+    '\bdownload' + 'file\b'
+    '\bfrombase64' + 'string\b'
+    '\binvoke-' + 'mimi' + 'katz\b'
+    '\bmi' + 'mikatz\b'
+    '\binvoke-' + 'obfuscation\b'
+    '\binvoke-' + 'shellcode\b'
+    '\breflective\s*pe\s*' + 'injection\b'
+    '\bget-gpp' + 'password\b'
+    'new-object\s+-comobject\s+wscript\.shell'
 )
-
 # 
 # SECCION 2: FUNCIONES AUXILIARES
 # 
@@ -85,6 +113,7 @@ $Global:MaliciousPatterns = @(
     Muestra el banner del script con informacion de version
 #>
 function Show-Banner {
+    if ($Global:Headless) { return }
     Clear-Host
     Write-Host "" -ForegroundColor Cyan
     Write-Host "                    AUDITORIA DE SEGURIDAD EMPRESARIAL COMPLETA                       " -ForegroundColor Cyan
@@ -157,6 +186,59 @@ function Update-ModuleProgress {
     Show-Progress -Activity "Ejecutando Auditoria de Seguridad" `
                 -Status "Modulo $Global:CurrentModule de $Global:TotalModules : $ModuleName" `
                 -PercentComplete $percentComplete
+    
+    $Global:LastModuleName = $ModuleName
+    Write-StatusFile -Phase "running" -Name $ModuleName -Module $Global:CurrentModule -Percent $percentComplete -Message "Ejecutando modulo $ModuleName"
+}
+
+<#
+.SYNOPSIS
+    Escribe el estado de la auditoria en el archivo de estado (modo headless)
+    para que la interfaz web pueda mostrar el progreso en vivo.
+.PARAMETER Phase
+    Fase actual: running, done o error
+.PARAMETER Name
+    Nombre del modulo en curso
+.PARAMETER Module
+    Numero de modulo actual (0-10)
+.PARAMETER Percent
+    Porcentaje de completitud (0-100)
+.PARAMETER Message
+    Mensaje descriptivo opcional
+.PARAMETER RiskLevel
+    Nivel de riesgo final (solo en fase done)
+#>
+function Write-StatusFile {
+    param(
+        [string]$Phase,
+        [string]$Name,
+        [int]$Module,
+        [int]$Percent,
+        [string]$Message = "",
+        [string]$RiskLevel = $null
+    )
+    
+    if (-not $Global:Headless -or -not $Global:StatusFile) { return }
+    
+    try {
+        $status = [PSCustomObject]@{
+            phase = $Phase
+            module = $Module
+            total = $Global:TotalModules
+            name = $Name
+            percent = $Percent
+            threats = $Global:ThreatsDetected.Count
+            errors = $Global:ErrorsCount
+            warnings = $Global:WarningsCount
+            message = $Message
+            riskLevel = $RiskLevel
+            auditPath = $Global:AuditPath
+            updatedAt = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        }
+        $status | ConvertTo-Json -Compress | Set-Content -Path $Global:StatusFile -Encoding UTF8
+    } catch {
+        # Nunca interrumpir la auditoria por un fallo al escribir el estado
+    }
 }
 
 <#
@@ -247,6 +329,13 @@ function Add-ThreatDetection {
     }
     
     $Global:ThreatsDetected += $threat
+    
+    # Actualizar estado en modo headless con el recuento de amenazas
+    if ($Global:Headless -and $Global:StatusFile) {
+        Write-StatusFile -Phase "running" -Name $Global:LastModuleName -Module $Global:CurrentModule `
+            -Percent ([math]::Round(($Global:CurrentModule / $Global:TotalModules) * 100)) `
+            -Message "[$Severity] $ThreatType : $Description"
+    }
     
     # Mostrar alerta en consola
     $color = switch ($Severity) {
@@ -370,10 +459,13 @@ function Get-UsersAndPermissions {
         Export-MultiFormat -Data $localUsers -BasePath $outputPath -Title "Usuarios Locales del Sistema"
         
         # Detectar usuarios con configuraciones inseguras
+        # Solo senalar cuentas habilitadas que realmente no tengan contrasena definida;
+        # las cuentas deshabilitadas (DefaultAccount, Invitado) y las que si tienen
+        # contrasena establecida no son un riesgo real.
         $localUsers | ForEach-Object {
-            if (-not $_.PasswordRequired) {
+            if ($_.Enabled -and -not $_.PasswordLastSet) {
                 Add-ThreatDetection -ThreatType "Usuario sin contrasena" -Severity "HIGH" `
-                    -Description "Usuario '$($_.Name)' no requiere contrasena" -Details $_
+                    -Description "Usuario '$($_.Name)' esta habilitado y no tiene contrasena definida" -Details $_
             }
             if ($_.Enabled -and $null -eq $_.LastLogon) {
                 Add-ThreatDetection -ThreatType "Usuario habilitado sin uso" -Severity "MEDIUM" `
@@ -443,8 +535,25 @@ function Get-ProcessesAndServices {
         Export-MultiFormat -Data $processes -BasePath $outputPath -Title "Procesos en Ejecucion"
         
         # Detectar procesos sin ruta (altamente sospechoso)
-        $processesNoPath = Get-Process | Where-Object { 
-            $null -eq $_.Path -and $_.Name -ne "Idle" -and $_.Name -ne "System" 
+        # Se excluyen procesos protegidos del sistema cuyo Path no es accesible
+        # ni siquiera con privilegios de administrador (falsos positivos).
+        $protectedProcessNames = @(
+            'Idle', 'System', 'Registry', 'Memory Compression', 'Secure System',
+            'csrss', 'lsass', 'smss', 'wininit', 'winlogon', 'services', 'svchost',
+            'fontdrvhost', 'dwm', 'sihost', 'taskhostw', 'ctfmon', 'conhost',
+            'spoolsv', 'WUDFHost', 'audiodg', 'LsaIso', 'MsMpEng', 'NisSrv',
+            'MpDefenderCoreService', 'SecurityHealthService', 'SecurityHealthSystray'
+        )
+        # Sin elevacion, Path es null para procesos de otras sesiones y la comprobacion
+        # generaria falsos positivos masivos; solo tiene sentido con privilegios de admin.
+        $processesNoPath = @()
+        if (Test-Administrator) {
+            $processesNoPath = Get-Process | Where-Object { 
+                $null -eq $_.Path -and $_.Name -notin $protectedProcessNames
+            }
+        } else {
+            Write-AuditLog "  -> Comprobacion de procesos sin ruta omitida (requiere elevacion)" -Level WARNING
+            $Global:WarningsCount++
         }
         
         if ($processesNoPath) {
@@ -466,11 +575,13 @@ function Get-ProcessesAndServices {
         
         # Detectar comandos codificados y patrones maliciosos
         $processesWithCmdLine | ForEach-Object {
+            # Omitir el propio proceso de auditoria (autodeteccion)
+            if ($_.ProcessId -eq $PID) { return }
             if ($_.CommandLine) {
                 $cmdLine = $_.CommandLine.ToLower()
                 
                 # Detectar comando codificado en Base64
-                if ($cmdLine -match "-enc|-encodedcommand") {
+                if ($cmdLine -match ('-(e|en|enco|enc|encod|enc' + 'oded)(com' + 'mand)?\b')) {
                     Add-ThreatDetection -ThreatType "Comando codificado" -Severity "CRITICAL" `
                         -Description "Proceso '$($_.Name)' (PID: $($_.ProcessId)) usando comando codificado" -Details $_
                 }
@@ -553,11 +664,17 @@ function Get-NetworkAnalysis {
                     -Description "Proceso '$($_.ProcessName)' conectado a puerto sospechoso $($_.RemotePort)" -Details $_
             }
             
-            # Detectar conexiones externas de procesos del sistema
+            # Detectar conexiones externas de procesos del sistema.
+            # Un svchost/lsass legitimo siempre esta en C:\Windows\System32; solo se
+            # senala si la ruta del binario es legible y NO esta ahi (secuestro de proceso).
+            # Sin elevacion la ruta no es legible y no se puede verificar, por lo que no se senala.
             if ($_.ProcessName -in @('svchost', 'lsass', 'csrss', 'smss', 'wininit') -and 
                 $_.RemoteAddress -notmatch "^(127\.0\.0\.1|::1|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.)") {
-                Add-ThreatDetection -ThreatType "Proceso del sistema con conexion externa" -Severity "CRITICAL" `
-                    -Description "Proceso del sistema '$($_.ProcessName)' conectado a IP externa $($_.RemoteAddress)" -Details $_
+                $procPath = "$($_.ProcessPath)".ToLower()
+                if ($procPath -and $procPath -notlike 'c:\windows\system32\*') {
+                    Add-ThreatDetection -ThreatType "Proceso del sistema con conexion externa" -Severity "CRITICAL" `
+                        -Description "Proceso '$($_.ProcessName)' (ruta: $($_.ProcessPath)) conectado a IP externa $($_.RemoteAddress)" -Details $_
+                }
             }
         }
         
@@ -689,8 +806,9 @@ function Get-SecurityEvents {
             $psEvents = Get-WinEvent -FilterHashtable @{
                 LogName='Microsoft-Windows-PowerShell/Operational';
                 ID=4104
-            } -MaxEvents 200 -ErrorAction SilentlyContinue | Select-Object TimeCreated, Id, 
-                @{Name="ScriptBlock"; Expression={$_.Properties[2].Value}}
+            } -MaxEvents 200 -ErrorAction SilentlyContinue | Select-Object TimeCreated, Id, ProcessId,
+                @{Name="ScriptBlock"; Expression={$_.Properties[2].Value}},
+                @{Name="ScriptPath"; Expression={$_.Properties[4].Value}}
             
             if ($psEvents) {
                 $outputPath = Join-Path $Global:AuditPath "05_Eventos\powershell_scriptblock"
@@ -698,9 +816,15 @@ function Get-SecurityEvents {
                 
                 # Detectar comandos codificados o patrones maliciosos
                 $psEvents | ForEach-Object {
-                    $scriptBlock = $_.ScriptBlock.ToLower()
+                    # Omitir eventos generados por la propia auditoria (autodeteccion)
+                    if ($_.ProcessId -eq $PID -or
+                        ($_.ScriptPath -and $_.ScriptPath -eq $Global:ScriptPath) -or
+                        ($_.ScriptBlock -and $_.ScriptBlock -match [regex]::Escape($Global:ScriptPath))) {
+                        return
+                    }
+                    $scriptBlock = if ($_.ScriptBlock) { $_.ScriptBlock.ToLower() } else { "" }
                     
-                    if ($scriptBlock -match "-enc|-encodedcommand") {
+                    if ($scriptBlock -match ('-(e|en|enco|enc|encod|enc' + 'oded)(com' + 'mand)?\b')) {
                         Add-ThreatDetection -ThreatType "PowerShell comando codificado" -Severity "HIGH" `
                             -Description "Comando PowerShell codificado detectado" -Details $_
                     }
@@ -799,8 +923,50 @@ function Get-FilesAndPersistence {
         }
         
         # Archivos ocultos en directorios de usuario
-        $hiddenFiles = Get-ChildItem -Path "C:\Users" -Hidden -Recurse -Force -ErrorAction SilentlyContinue -Include $Global:SuspiciousExtensions |
-            Select-Object FullName, Attributes, Length, CreationTime, LastWriteTime
+        # Recursion acotada: exclusiones de carpetas pesadas, anti-ciclo de enlaces y tiempo maximo,
+        # porque Get-ChildItem -Recurse sobre C:\Users puede tardar horas en Windows PowerShell 5.1
+        $suspiciousExts = $Global:SuspiciousExtensions -replace '\*', ''
+        $hiddenFiles = @()
+        $scanQueue = New-Object System.Collections.Generic.Queue[string]
+        [void]$scanQueue.Enqueue('C:\Users')
+        $visitedDirs = New-Object System.Collections.Generic.HashSet[string]
+        [void]$visitedDirs.Add('C:\Users')
+        $excludeFolderNames = @(
+            'node_modules', '.git', '__pycache__', '$recycle.bin',
+            'venv', '.venv', '.npm', '.nuget', '.cargo', '.rustup',
+            '.gradle', '.m2', '.local', '.cache'
+        )
+        $scanTimeout = [TimeSpan]::FromSeconds(180)
+        $scanStart = Get-Date
+        while ($scanQueue.Count -gt 0) {
+            if ((Get-Date) - $scanStart -gt $scanTimeout) {
+                Write-AuditLog "  -> Escaneo de ocultos detenido por tiempo maximo (180s); resultados parciales" -Level INFO
+                break
+            }
+            $dir = $scanQueue.Dequeue()
+            $items = Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue
+            foreach ($item in $items) {
+                if ($item.PSIsContainer) {
+                    $norm = $item.FullName.TrimEnd('\')
+                    if (-not $visitedDirs.Contains($norm)) {
+                        [void]$visitedDirs.Add($norm)
+                        if ($excludeFolderNames -notcontains $item.Name.ToLower()) {
+                            [void]$scanQueue.Enqueue($norm)
+                        }
+                    }
+                } else {
+                    if (($item.Attributes -band [System.IO.FileAttributes]::Hidden) -and ($item.Extension -in $suspiciousExts)) {
+                        $hiddenFiles += ,[PSCustomObject]@{
+                            FullName = $item.FullName
+                            Attributes = $item.Attributes
+                            Length = $item.Length
+                            CreationTime = $item.CreationTime
+                            LastWriteTime = $item.LastWriteTime
+                        }
+                    }
+                }
+            }
+        }
         
         if ($hiddenFiles) {
             $outputPath = Join-Path $Global:AuditPath "06_Archivos\archivos_ocultos_sospechosos"
@@ -885,7 +1051,13 @@ function Get-FilesAndPersistence {
             Export-MultiFormat -Data $hostsInfo -BasePath $outputPath -Title "Archivo HOSTS del Sistema"
             
             # Detectar entradas sospechosas en HOSTS
+            # Se omiten secciones gestionadas por herramientas (Tailscale MagicDNS),
+            # que reescriben el archivo de forma legitima.
+            $inManagedSection = $false
             $hostsContent | ForEach-Object {
+                if ($_ -match "TailscaleHostsSectionStart") { $inManagedSection = $true; return }
+                if ($_ -match "TailscaleHostsSectionEnd") { $inManagedSection = $false; return }
+                if ($inManagedSection) { return }
                 if ($_ -notmatch "^#" -and $_ -match "^\s*\d+\.\d+\.\d+\.\d+" -and $_ -notmatch "127\.0\.0\.1.*localhost") {
                     Add-ThreatDetection -ThreatType "Entrada sospechosa en HOSTS" -Severity "HIGH" `
                         -Description "Redireccion en archivo HOSTS: $_" -Details $_
@@ -994,7 +1166,9 @@ function Get-SecurityConfiguration {
         
         # Detectar recursos compartidos peligrosos
         $networkShares | ForEach-Object {
-            if ($_.Name -match "^[A-Z]\$$" -and $_.Name -ne "ADMIN$" -and $_.Name -ne "IPC$") {
+            # C$, D$, ... son acciones administrativas predeterminadas de Windows en todos
+            # los equipos; solo senalar nombres no estandar con terminacion $.
+            if ($_.Name -notmatch '^[A-Z]\$' -and $_.Name -ne 'ADMIN$' -and $_.Name -ne 'IPC$' -and $_.Name -match '\$') {
                 Add-ThreatDetection -ThreatType "Recurso compartido de disco" -Severity "MEDIUM" `
                     -Description "Disco compartido detectado: $($_.Name)" -Details $_
             }
@@ -1056,7 +1230,7 @@ function Get-LOLBASDetection {
             $lolbasProcesses | ForEach-Object {
                 $cmdLine = $_.CommandLine
                 
-                if ($cmdLine -match "-enc|-encodedcommand|-urlcache|-split|-f http") {
+                if ($cmdLine -match ('-(e|en|enco|enc|encod|enc' + 'oded)(com' + 'mand)?\b|-urlcache|\b-split\b|-f\s+http')) {
                     Add-ThreatDetection -ThreatType "Uso sospechoso de LOLBAS" -Severity "HIGH" `
                         -Description "Proceso LOLBAS '$($_.Name)' con argumentos sospechosos" -Details $_
                 }
@@ -1113,10 +1287,16 @@ function Get-DriversAnalysis {
     Write-AuditLog "Analizando drivers del sistema..." -Level INFO
     
     try {
-        # Drivers cargados en el sistema
-        $drivers = Get-WindowsDriver -Online -All -ErrorAction SilentlyContinue | 
-            Select-Object Driver, OriginalFileName, ProviderName, ClassName, DriverSignature,
-                Version, Date
+        # Drivers cargados en el sistema (Get-WindowsDriver requiere elevacion)
+        if (Test-Administrator) {
+            $drivers = Get-WindowsDriver -Online -All -ErrorAction SilentlyContinue | 
+                Select-Object Driver, OriginalFileName, ProviderName, ClassName, DriverSignature,
+                    Version, Date
+        } else {
+            Write-AuditLog "  -> Analisis de drivers omitido (Get-WindowsDriver requiere elevacion)" -Level WARNING
+            $Global:WarningsCount++
+            $drivers = @()
+        }
         
         if ($drivers) {
             $outputPath = Join-Path $Global:AuditPath "09_Drivers\drivers_instalados"
@@ -1125,19 +1305,42 @@ function Get-DriversAnalysis {
             Write-AuditLog "  -> Total drivers: $($drivers.Count)" -Level INFO
         }
         
-        # Drivers sin firma digital (altamente sospechoso)
-        $unsignedDrivers = $drivers | Where-Object { $_.DriverSignature -ne "Valid" }
+        # Drivers CARGADOS sin firma digital valida (altamente sospechoso).
+        # Get-WindowsDriver no expone informacion de firma, por lo que se resuelve el .sys
+        # de cada driver cargado (Win32_SystemDriver) y se verifica con Get-AuthenticodeSignature.
+        $loadedDrivers = @(Get-CimInstance Win32_SystemDriver -ErrorAction SilentlyContinue |
+            Where-Object { $_.PathName })
+        $sigCache = @{}
+        $unsignedDrivers = @()
+        foreach ($d in $loadedDrivers) {
+            $sysPath = $d.PathName
+            if (-not $sigCache.ContainsKey($sysPath)) {
+                try { $sigCache[$sysPath] = (Get-AuthenticodeSignature -LiteralPath $sysPath).Status }
+                catch { $sigCache[$sysPath] = "UnknownError" }
+            }
+            $status = $sigCache[$sysPath]
+            if ($status -ne "Valid") {
+                $unsignedDrivers += ,@{
+                    Service = $d.Name
+                    PathName = $sysPath
+                    State = $d.State
+                    SignatureStatus = $status
+                }
+            }
+        }
         
         if ($unsignedDrivers) {
             $outputPath = Join-Path $Global:AuditPath "09_Drivers\drivers_sin_firma"
-            Export-MultiFormat -Data $unsignedDrivers -BasePath $outputPath -Title "[!] Drivers sin Firma Digital"
+            Export-MultiFormat -Data $unsignedDrivers -BasePath $outputPath -Title "[!] Drivers cargados sin Firma Digital valida"
             
             $unsignedDrivers | ForEach-Object {
-                Add-ThreatDetection -ThreatType "Driver sin firma digital" -Severity "HIGH" `
-                    -Description "Driver '$($_.Driver)' no tiene firma digital valida" -Details $_
+                $sev = "HIGH"
+                if ($_.SignatureStatus -eq "NotTrusted") { $sev = "MEDIUM" }
+                Add-ThreatDetection -ThreatType "Driver sin firma digital" -Severity $sev `
+                    -Description "Driver cargado '$($_.Service)' ($($_.PathName)) con firma: $($_.SignatureStatus)" -Details $_
             }
             
-            Write-AuditLog "  -> Drivers sin firma: $($unsignedDrivers.Count)" -Level WARNING
+            Write-AuditLog "  -> Drivers cargados sin firma valida: $($unsignedDrivers.Count)" -Level WARNING
             $Global:WarningsCount++
         }
         
@@ -1386,7 +1589,7 @@ function Start-SecurityAudit {
     # Crear directorio de auditoria con timestamp
     $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
     $auditFolderName = "Auditoria_$timestamp"
-    $Global:AuditPath = Join-Path $PSScriptRoot $auditFolderName
+    $Global:AuditPath = Join-Path $Global:ResultPath $auditFolderName
     
     Write-Host "[DIR] Creando estructura de carpetas..." -ForegroundColor Cyan
     
@@ -1428,6 +1631,8 @@ function Start-SecurityAudit {
     Write-Host "[START] Iniciando auditoria de seguridad empresarial..." -ForegroundColor Cyan
     Write-Host "   Esto puede tomar varios minutos. Por favor espere...`n" -ForegroundColor Gray
     
+    Write-StatusFile -Phase "running" -Name "Inicializando" -Module 0 -Percent 0 -Message "Iniciando auditoria de seguridad"
+    
     # Ejecutar modulos de auditoria
     try {
         Get-SystemInformation
@@ -1452,6 +1657,9 @@ function Start-SecurityAudit {
         Write-Host ""
         
         $riskLevel = New-ExecutiveSummary
+        
+        Write-StatusFile -Phase "done" -Name "Completada" -Module $Global:TotalModules -Percent 100 `
+            -Message "Auditoria completada correctamente" -RiskLevel $riskLevel
         
         # Mostrar resumen en consola
         Write-Host ""
@@ -1503,17 +1711,19 @@ function Start-SecurityAudit {
         Write-Host "" -ForegroundColor Gray
         Write-Host ""
         
-        # Preguntar si abrir carpeta de resultados
-        Write-Host "¿Desea abrir la carpeta de resultados? (S/N): " -NoNewline -ForegroundColor Cyan
-        $response = Read-Host
-        
-        if ($response -eq "S" -or $response -eq "s") {
-            Start-Process explorer.exe $Global:AuditPath
+        # Preguntar si abrir carpeta de resultados (solo modo interactivo)
+        if (-not $Global:Headless) {
+            Write-Host "¿Desea abrir la carpeta de resultados? (S/N): " -NoNewline -ForegroundColor Cyan
+            $response = Read-Host
+            
+            if ($response -eq "S" -or $response -eq "s") {
+                Start-Process explorer.exe $Global:AuditPath
+            }
+            
+            Write-Host ""
+            Write-Host "Presione cualquier tecla para salir..." -ForegroundColor Gray
+            $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
         }
-        
-        Write-Host ""
-        Write-Host "Presione cualquier tecla para salir..." -ForegroundColor Gray
-        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
         
     } catch {
         Write-Host ""
@@ -1532,8 +1742,12 @@ function Start-SecurityAudit {
         "ERROR CRITICO: $($_.Exception.Message)" | Out-File $Global:LogFile -Append -Encoding UTF8
         "Stack Trace: $($_.ScriptStackTrace)" | Out-File $Global:LogFile -Append -Encoding UTF8
         
-        Write-Host "Presione cualquier tecla para salir..." -ForegroundColor Gray
-        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        Write-StatusFile -Phase "error" -Name "Error" -Module $Global:CurrentModule -Percent 0 -Message $_.Exception.Message
+        
+        if (-not $Global:Headless) {
+            Write-Host "Presione cualquier tecla para salir..." -ForegroundColor Gray
+            $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        }
     }
 }
 

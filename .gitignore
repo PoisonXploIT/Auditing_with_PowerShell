@@ -3,6 +3,16 @@ Auditoria_*/
 *.csv
 *.html
 *.json
+.runs/
+
+# Interfaz web (ui/)
+ui/.venv/
+ui/__pycache__/
+__pycache__/
+*.pyc
+!ui/static/*.html
+!ui/static/*.css
+!ui/static/*.js
 
 # PowerShell
 *.ps1xml

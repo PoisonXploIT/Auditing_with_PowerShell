@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Security Audit - Consola de Auditoria</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 2l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V5l7-3z" />
+          <path class="brand-check" d="M8.5 12l2.5 2.5L15.5 9" />
+        </svg>
+        <div class="brand-text">
+          <span class="brand-name">Security Audit</span>
+          <span class="brand-sub">Consola Empresarial</span>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-item" data-view="dashboard">
+          <svg viewBox="0 0 24 24"><path d="M3 3h8v8H3zM13 3h8v5h-8zM13 10h8v11h-8zM3 13h8v8H3z"/></svg>
+          <span>Panel General</span>
+        </button>
+        <button class="nav-item" data-view="audits">
+          <svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+          <span>Auditorias</span>
+        </button>
+        <button class="nav-item" data-view="run">
+          <svg viewBox="0 0 24 24"><path d="M7 4l14 8-14 8z"/></svg>
+          <span>Nueva Auditoria</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="version" id="sidebar-version">v3.0</div>
+        <div class="sidebar-note">Script PowerShell<br />Invoke-SecurityAudit.ps1</div>
+        <div class="sidebar-note">Proteccion CSRF activa<br />Verificacion de origen en mutaciones</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-title" id="topbar-title">Panel General</div>
+        <div class="topbar-actions">
+          <button class="btn btn-ghost" id="btn-refresh">
+            <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 6.3M20 4v7h-7"/></svg>
+            Refrescar
+          </button>
+        </div>
+      </header>
+
+      <section class="content">
+        <!-- Panel General -->
+        <div class="view" id="view-dashboard"></div>
+
+        <!-- Auditorias -->
+        <div class="view" id="view-audits"></div>
+
+        <!-- Nueva Auditoria -->
+        <div class="view" id="view-run"></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
