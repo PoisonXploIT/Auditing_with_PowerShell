@@ -452,7 +452,8 @@ Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy RemoteSigned
 - **Splunk/ELK** - Análisis centralizado de logs
 
 ### Contacto y Soporte
--  Email: analista@sammideblas.com
+- Pagina: [sammideblas.com](https://sammideblas.com)
+- Email: analista@sammideblas.com
 
 
 ---
@@ -498,7 +499,7 @@ Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy RemoteSigned
 
 ##  Licencia MIT
 
-Este script es propiedad de Sammi De Blas Kalloub 
+Este script es propiedad de Sammi De Blas 
 
 **Libre Distribucion**
 
