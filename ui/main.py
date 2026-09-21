@@ -422,6 +422,73 @@ def download_audit_csv(audit_id: str):
     )
 
 
+@app.get("/api/audits/{audit_id}/download/log")
+def download_audit_log(audit_id: str):
+    """Exporta la auditoria como log unificado JSON Lines (.jsonl).
+
+    Contrato de correlacion (lo que lee el Visor de Logs Unificado y cualquier
+    pipeline posterior): una linea JSON por evento con campos
+    ts / level / msg / source. Nivel normalizado: CRIT, ERR, WRN, INF.
+    Orden cronologico por timestamp del evento.
+    """
+    folder = _safe_audit_dir(audit_id)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Auditoria no encontrada")
+
+    meta = build_audit_meta(folder)
+    s = meta.get("summary") or {}
+    counts = meta.get("severity_counts") or {}
+    level_map = {"CRITICAL": "CRIT", "HIGH": "ERR", "MEDIUM": "WRN", "LOW": "INF"}
+
+    def emit(ts: str, level: str, msg: str) -> dict:
+        return {"ts": ts or "", "level": level, "msg": msg, "source": "ps-audit"}
+
+    events = []
+    if s.get("fecha_inicio"):
+        events.append(
+            emit(
+                s["fecha_inicio"],
+                "INF",
+                f"Auditoria iniciada: sistema {s.get('sistema', '?')}, "
+                f"usuario {s.get('usuario', '?')}, privilegios {s.get('privilegios', '?')}",
+            )
+        )
+
+    threats = load_threats(folder)
+    threats.sort(key=lambda t: str(t.get("timestamp") or ""))
+    for t in threats:
+        sev = (t.get("severity") or "LOW").upper()
+        level = level_map.get(sev, "INF")
+        desc = t.get("description") or ""
+        events.append(
+            emit(
+                str(t.get("timestamp") or ""),
+                level,
+                f"[{sev}] {t.get('type', 'Amenaza')} - {desc}",
+            )
+        )
+
+    if s.get("fecha_fin"):
+        events.append(
+            emit(
+                s["fecha_fin"],
+                "INF",
+                f"Auditoria finalizada: {s.get('modulos', '?')} modulos, "
+                f"{meta.get('threats_count', 0)} amenazas "
+                f"(CRITICAL {counts.get('CRITICAL', 0)}, HIGH {counts.get('HIGH', 0)}, "
+                f"MEDIUM {counts.get('MEDIUM', 0)}, LOW {counts.get('LOW', 0)}), "
+                f"riesgo {meta.get('risk_level', '?')}",
+            )
+        )
+
+    content = "\n".join(json.dumps(e, ensure_ascii=False) for e in events) + "\n"
+    return Response(
+        content=content,
+        media_type="application/x-ndjson; charset=utf-8",
+        headers=_attachment(f"{audit_id}_unified.jsonl"),
+    )
+
+
 @app.get("/api/audits/{audit_id}/download/pdf")
 def download_audit_pdf(audit_id: str):
     folder = _safe_audit_dir(audit_id)
@@ -625,6 +692,74 @@ def cancel_run(run_id: str):
     except OSError:
         pass
     return {"cancelled": True}
+
+
+# ---------------------------------------------------------------------------
+# IA: veredictos Jev + explicaciones tecnicas LLM local (enriquece el informe)
+# ---------------------------------------------------------------------------
+
+import ai_enrich  # noqa: E402  (mismo directorio; import aqui para no mover el bloque de arriba)
+
+
+class AiConfigRequest(BaseModel):
+    jev_enabled: Optional[bool] = None
+    jev_api_key: Optional[str] = None
+    llm_enabled: Optional[bool] = None
+    llm_base_url: Optional[str] = None
+    llm_model: Optional[str] = None
+
+
+class AiTestRequest(BaseModel):
+    target: str  # "jev" | "llm"
+
+
+class AiEnrichRequest(BaseModel):
+    audit_id: str
+
+
+@app.get("/api/ai/config")
+def get_ai_config():
+    return ai_enrich.get_ai_config()
+
+
+@app.post("/api/ai/config")
+def set_ai_config(req: AiConfigRequest):
+    patch = req.model_dump(exclude_none=True)
+    if "llm_base_url" in patch and not ai_enrich.is_loopback_url(patch["llm_base_url"]):
+        raise HTTPException(
+            status_code=400,
+            detail="El LLM local solo puede apuntar a loopback (127.0.0.1 / localhost / ::1)",
+        )
+    return ai_enrich.set_ai_config(patch)
+
+
+@app.post("/api/ai/test")
+def test_ai(req: AiTestRequest):
+    if req.target == "jev":
+        return ai_enrich.test_jev()
+    if req.target == "llm":
+        return ai_enrich.test_llm()
+    raise HTTPException(status_code=400, detail="target debe ser 'jev' o 'llm'")
+
+
+@app.post("/api/ai/enrich")
+def enrich_ai(req: AiEnrichRequest):
+    folder = _safe_audit_dir(req.audit_id)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Auditoria no encontrada")
+    meta = build_audit_meta(folder)
+    return ai_enrich.enrich_audit(folder, meta)
+
+
+@app.get("/api/ai/enrich/{audit_id}")
+def get_ai_enrich(audit_id: str):
+    folder = _safe_audit_dir(audit_id)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Auditoria no encontrada")
+    data = read_json(folder / "IA_ENRICH.json")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=404, detail="Sin enriquecimiento IA guardado")
+    return data
 
 
 # ---------------------------------------------------------------------------

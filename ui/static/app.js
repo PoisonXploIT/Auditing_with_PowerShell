@@ -319,6 +319,7 @@ function dashboardHtml(a) {
         <button class="btn btn-ghost" data-dl="pdf" title="Descargar reporte en PDF">PDF</button>
         <button class="btn btn-ghost" data-dl="json" title="Descargar exportacion completa en JSON">JSON</button>
         <button class="btn btn-ghost" data-dl="csv" title="Descargar amenazas en CSV">CSV</button>
+        <button class="btn btn-ghost" data-dl="log" title="Exportar log unificado (JSON Lines) para el Visor de Logs">LOG</button>
       </div>
       <button class="btn btn-ghost" id="btn-cleanup-dash">Limpiar auditorias</button>
     </div>
@@ -355,6 +356,8 @@ function dashboardHtml(a) {
     <div id="threat-table"></div>
   </div>
 
+  ${aiCardHtml()}
+
   <div class="card" style="margin-top:18px">
     <div class="card-head"><span class="card-title">Modulos de Auditoria</span></div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px">${modules}</div>
@@ -379,6 +382,103 @@ function threatsTableHtml(threats) {
     <thead><tr><th>Severidad</th><th>Fecha</th><th>Tipo</th><th>Descripcion</th><th>Detalle</th></tr></thead>
     <tbody>${rows}</tbody>
   </table></div>`;
+}
+
+function aiCardHtml() {
+  return `
+  <div class="card" style="margin-top:18px">
+    <div class="card-head">
+      <span class="card-title">IA — Veredictos (Jev) y Explicaciones Tecnicas (LLM local)</span>
+      <span class="card-sub">Opcional, referencial: enriquece el informe sin cambiar los datos</span>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:10px;margin-top:12px">
+      <div class="flex" style="gap:8px;align-items:center;flex-wrap:wrap">
+        <span class="mono text-muted" style="min-width:150px">Jev (TypeSafe)</span>
+        <input class="input mono" id="ai-jev-key" type="password" placeholder="API key (solo memoria)" style="max-width:340px" />
+        <button class="btn btn-ghost" id="btn-ai-save-jev">Guardar Jev</button>
+        <button class="btn btn-ghost" id="btn-ai-test-jev">Probar Jev</button>
+      </div>
+      <div class="flex" style="gap:8px;align-items:center;flex-wrap:wrap">
+        <span class="mono text-muted" style="min-width:150px">LLM local (tecnico)</span>
+        <input class="input mono" id="ai-llm-url" placeholder="http://127.0.0.1:8099" style="max-width:220px" />
+        <input class="input mono" id="ai-llm-model" placeholder="modelo" style="max-width:220px" />
+        <button class="btn btn-ghost" id="btn-ai-save-llm">Guardar LLM</button>
+        <button class="btn btn-ghost" id="btn-ai-test-llm">Probar LLM</button>
+      </div>
+      <div class="flex" style="gap:8px;align-items:center">
+        <button class="btn btn-primary" id="btn-ai-enrich">Enriquecer informe con IA</button>
+        <span class="text-muted" id="ai-status"></span>
+      </div>
+    </div>
+    <div id="ai-results" style="margin-top:16px"></div>
+  </div>`;
+}
+
+function aiVerdictsTableHtml(a, jev) {
+  const verdicts = jev.verdicts || {};
+  const rows = Object.keys(verdicts)
+    .map((i) => ({ i: Number(i), v: verdicts[i] }))
+    .filter((x) => x.i < a.threats.length)
+    .sort((p, q) => p.i - q.i)
+    .map(({ i, v }) => {
+      const t = a.threats[i];
+      const fp = v.prob_false_positive == null ? "—" : Math.round(v.prob_false_positive * 100) + "%";
+      return `<tr>
+        <td>${severityBadge(t.severity)}</td>
+        <td style="font-weight:600">${esc(t.type || "—")}</td>
+        <td class="mono">${esc(v.verdict || "—")}</td>
+        <td class="num">${v.confidence == null ? "—" : esc(String(v.confidence))}</td>
+        <td class="num" style="font-weight:600">${fp}</td>
+        <td class="num">${v.severity_score == null ? "—" : esc(String(v.severity_score))} / 3</td>
+        <td class="num">${v.immediate_action == null ? "—" : esc(String(v.immediate_action))}</td>
+      </tr>`;
+    })
+    .join("");
+  if (!rows) return `<div class="text-muted">Sin veredictos Jev.</div>`;
+  return `<div class="table-wrap"><table>
+    <thead><tr><th>Severidad</th><th>Amenaza</th><th>Veredicto Jev</th><th>Confianza</th><th>Prob. falso positivo</th><th>Severidad IA</th><th>Accion inmediata (0-1)</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div>`;
+}
+
+function aiResultsHtml(a, data) {
+  if (!data) return "";
+  const parts = [];
+  const ex = data.executive_summary || {};
+  if (ex.status === "ok") {
+    parts.push(`<div class="card" style="background:var(--surface-2,transparent);border:1px solid var(--border)">
+      <div class="card-head"><span class="card-title">Resumen Ejecutivo (LLM local)</span></div>
+      <p style="margin:8px 0;line-height:1.5">${esc(ex.resumen_ejecutivo || "")}</p>
+      ${ex.riesgo_principal ? `<p style="margin:6px 0"><strong>Riesgo principal:</strong> ${esc(ex.riesgo_principal)}</p>` : ""}
+      ${(ex.acciones_prioritarias || []).length ? `<ul style="margin:8px 0 0;padding-left:20px">${ex.acciones_prioritarias.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+    </div>`);
+  }
+  const jev = data.jev || {};
+  if (jev.status === "ok") {
+    parts.push(`<div class="card" style="border:1px solid var(--border)">
+      <div class="card-head"><span class="card-title">Veredictos Jev</span><span class="card-sub">Prob. falso positivo derivada de veredicto + confianza</span></div>
+      ${aiVerdictsTableHtml(a, jev)}
+    </div>`);
+  }
+  const expls = data.llm_explanations || [];
+  if (expls.length) {
+    parts.push(`<div class="card" style="border:1px solid var(--border)">
+      <div class="card-head"><span class="card-title">Explicaciones Tecnicas (LLM local)</span></div>
+      ${expls.map((e) => `
+        <details style="margin-bottom:8px">
+          <summary style="cursor:pointer;font-weight:600">${esc(e.type || "—")} <span class="text-muted" style="font-weight:400">(${esc(e.severity || "")})</span></summary>
+          ${e.status === "unavailable"
+            ? `<div class="text-muted" style="margin-top:6px">Explicacion no disponible (${esc(e.reason || "")})</div>`
+            : `<div style="margin-top:8px;line-height:1.5">
+                <p><strong>Que es:</strong> ${esc(e.resumen || "")}</p>
+                <p style="margin:4px 0"><strong>Por que importa:</strong> ${esc(e.porque || "")}</p>
+                <p style="margin:4px 0"><strong>Sugerencia:</strong> ${esc(e.sugerencia || "")}</p>
+              </div>`}
+        </details>`).join("")}
+    </div>`);
+  }
+  if (!parts.length) return `<div class="text-muted">Sin datos IA (configurarlo y pulsar \u201cEnriquecer informe con IA\u201d).</div>`;
+  return parts.join("");
 }
 
 function bindDashboard(el, a) {
@@ -430,7 +530,84 @@ function bindDashboard(el, a) {
     });
   });
 
+  bindAiCard(el, a);
+
   apply();
+}
+
+async function bindAiCard(el, a) {
+  const resultsEl = el.querySelector("#ai-results");
+  const statusEl = el.querySelector("#ai-status");
+  if (!resultsEl) return;
+
+  // Prellenar config (key Jev llega maskeda; se reescribe solo si el usuario la cambia).
+  try {
+    const cfg = await api("/api/ai/config");
+    const jk = el.querySelector("#ai-jev-key");
+    const lu = el.querySelector("#ai-llm-url");
+    const lm = el.querySelector("#ai-llm-model");
+    if (jk) jk.value = cfg.jev_api_key || "";
+    if (lu) lu.value = cfg.llm_base_url || "";
+    if (lm) lm.value = cfg.llm_model || "";
+  } catch (e) { /* config no disponible */ }
+
+  // Cargar enriquecimiento guardado, si existe.
+  try {
+    const data = await api("/api/ai/enrich/" + encodeURIComponent(a.id));
+    resultsEl.innerHTML = aiResultsHtml(a, data);
+  } catch (e) { /* sin enriquecimiento todavia */ }
+
+  const saveJev = el.querySelector("#btn-ai-save-jev");
+  if (saveJev) saveJev.addEventListener("click", async () => {
+    const key = (el.querySelector("#ai-jev-key") || {}).value || "";
+    try {
+      await api("/api/ai/config", { method: "POST", body: JSON.stringify({ jev_enabled: true, jev_api_key: key }) });
+      toast("Config Jev guardada (solo memoria).", "success");
+    } catch (e) { toast(e.message, "error"); }
+  });
+
+  const saveLlm = el.querySelector("#btn-ai-save-llm");
+  if (saveLlm) saveLlm.addEventListener("click", async () => {
+    const url = ((el.querySelector("#ai-llm-url") || {}).value || "").trim();
+    const model = ((el.querySelector("#ai-llm-model") || {}).value || "").trim();
+    try {
+      await api("/api/ai/config", { method: "POST", body: JSON.stringify({ llm_enabled: true, llm_base_url: url, llm_model: model }) });
+      toast("Config LLM local guardada (solo memoria).", "success");
+    } catch (e) { toast(e.message, "error"); }
+  });
+
+  const testJev = el.querySelector("#btn-ai-test-jev");
+  if (testJev) testJev.addEventListener("click", async () => {
+    try {
+      const r = await api("/api/ai/test", { method: "POST", body: JSON.stringify({ target: "jev" }) });
+      toast(r.ok ? `Jev OK (modelo ${r.model || "?"}).` : `Jev fallo: ${r.error || "?"}`, r.ok ? "success" : "error");
+    } catch (e) { toast(e.message, "error"); }
+  });
+
+  const testLlm = el.querySelector("#btn-ai-test-llm");
+  if (testLlm) testLlm.addEventListener("click", async () => {
+    try {
+      const r = await api("/api/ai/test", { method: "POST", body: JSON.stringify({ target: "llm" }) });
+      toast(r.status === "ok" ? `LLM local OK (modelo ${r.model || "?"}).` : `LLM local fallo: ${r.reason || "?"}`, r.status === "ok" ? "success" : "error");
+    } catch (e) { toast(e.message, "error"); }
+  });
+
+  const enrichBtn = el.querySelector("#btn-ai-enrich");
+  if (enrichBtn) enrichBtn.addEventListener("click", async () => {
+    enrichBtn.disabled = true;
+    if (statusEl) statusEl.textContent = "En curso... puede tardar varios minutos (Jev + LLM local).";
+    try {
+      const data = await api("/api/ai/enrich", { method: "POST", body: JSON.stringify({ audit_id: a.id }) });
+      resultsEl.innerHTML = aiResultsHtml(a, data);
+      if (statusEl) statusEl.textContent = `Completado (${data.generated_at || ""}).`;
+      toast("Informe enriquecido con IA.", "success");
+    } catch (e) {
+      if (statusEl) statusEl.textContent = "";
+      toast(e.message, "error");
+    } finally {
+      enrichBtn.disabled = false;
+    }
+  });
 }
 
 function bindGoto(el) {

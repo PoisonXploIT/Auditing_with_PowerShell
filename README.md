@@ -49,10 +49,10 @@ cd ui
 python -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt
 
-# 2. Arrancar el servidor
-.\.venv\Scripts\python -m uvicorn main:app --host 127.0.0.1 --port 8766
+# 2. Arrancar el servidor (puerto fijo 8502: ALLOWED_ORIGINS/CSRF en main.py)
+.\.venv\Scripts\python -m uvicorn main:app --host 127.0.0.1 --port 8502
 
-# 3. Abrir http://127.0.0.1:8766 en el navegador
+# 3. Abrir http://127.0.0.1:8502 en el navegador
 ```
 
 La interfaz permite:
@@ -61,6 +61,28 @@ La interfaz permite:
 - Explorar los datos de cada módulo (tablas interactivas)
 - Ejecutar una nueva auditoría con barra de progreso en vivo
 - Ejecutar como administrador (eleva privilegios con UAC)
+- Exportar el log unificado (botón **LOG** junto a PDF/JSON/CSV)
+
+#### Log unificado (export JSON Lines)
+
+Cada auditoría puede exportarse como un único archivo `.jsonl` (una línea JSON por evento), pensado para ser ingerido por pipelines de correlación (Visor de Logs Unificado, SIEM, etc.):
+
+```
+GET /api/audits/{audit_id}/download/log
+```
+
+Contrato de la línea (orden cronológico):
+
+```json
+{"ts": "2026-09-16 21:40:41", "level": "ERR", "msg": "[HIGH] Driver sin firma digital - ...", "source": "ps-audit"}
+```
+
+| Campo | Valor |
+|-------|-------|
+| `ts` | Timestamp ISO del evento (inicio, amenaza, fin) |
+| `level` | Normalizado: CRIT / ERR / WRN / INF (desde CRITICAL/HIGH/MEDIUM/LOW) |
+| `msg` | `[SEVERITY] Tipo - Descripción` de la amenaza, o línea de inicio/resumen final |
+| `source` | Siempre `ps-audit` (identificador del emisor en el pipeline) |
 
 #### Ejecución headless (automatización)
 
@@ -71,6 +93,24 @@ El script acepta parámetros para ejecutarse sin interacción, usados internamen
 ```
 
 `-StatusFile` recibe un JSON de progreso (módulo, porcentaje, amenazas, errores) que la interfaz lee para mostrar el avance en tiempo real.
+
+#### IA: veredictos Jev y explicaciones técnicas (LLM local)
+
+La interfaz incluye una capa IA **opcional y referencial** que enriquece el informe de cada auditoría sin modificar sus datos. En el detalle de la auditoría (Panel General) aparece la tarjeta **IA — Veredictos (Jev) y Explicaciones Técnicas (LLM local)**:
+
+- **Jev (TypeSafe, nube)**: mismo contrato de API que sec-dashboard (`POST {base_url}` con `{model, state, questions}`, modelo pin `jev-1.13.0`). Por cada amenaza calcula veredicto (`true_positive`/`false_positive`/`noise`), confianza, severidad IA (0-3) y urgencia de acción (0-1). De ahí se deriva la **probabilidad de falso positivo** (`true_positive` → 1 − confianza; resto → confianza).
+- **LLM local (técnico)**: servidor OpenAI-compatible **solo loopback** (127.0.0.1/localhost/::1, sin API key). Actúa como técnico de ciberseguridad y produce, en español: por amenaza `{resumen, porque, sugerencia}` y un **resumen ejecutivo** de toda la auditoría (`resumen_ejecutivo`, `riesgo_principal`, `acciones_prioritarias[]`).
+- Pulsar **Enriquecer informe con IA** genera todo y persiste dos archivos en la carpeta de la auditoría: `IA_ENRICH.json` (datos) e `IA_RESUMEN_EJECUTIVO.md` (informe legible). Al volver a abrir la auditoría, los resultados guardados se muestran automáticamente.
+
+Configuración (solo memoria; se pierde al reiniciar el servidor):
+- **Jev**: pegar API key → *Guardar Jev* → *Probar Jev*.
+- **LLM local**: base URL loopback + nombre de modelo → *Guardar LLM* → *Probar LLM*. Sin GPU o modelo local: déjelo deshabilitado; nada cambia.
+
+Reglas de seguridad: key Jev solo en memoria (maskeda en lecturas, se envía solo a `api.typesafe.ai`); LLM forzado loopback por el backend; cada fase degrada de forma independiente (ningún error rompe la vista ni el informe); sin dependencias nuevas (solo stdlib).
+
+Endpoints: `GET/POST /api/ai/config`, `POST /api/ai/test` (`{"target": "jev"|"llm"}`), `POST /api/ai/enrich` (`{"audit_id": ...}`), `GET /api/ai/enrich/{audit_id}`.
+
+Tests sin red: desde `ui/` → `python -m unittest tests.test_ai_enrich -v`.
 
 ---
 
