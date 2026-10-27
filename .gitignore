@@ -28,3 +28,4 @@ Desktop.ini
 .idea/
 *.suo
 *.user
+.venv/

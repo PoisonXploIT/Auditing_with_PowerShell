@@ -119,6 +119,7 @@ def parse_summary(path: Path) -> dict:
         "altas": r"^Amenazas ALTAS:\s+(.+)$",
         "medias": r"^Amenazas MEDIAS:\s+(.+)$",
         "bajas": r"^Amenazas BAJAS:\s+(.+)$",
+        "cobertura": r"^Cobertura:\s+(.+)$",
     }
 
     for key, pattern in patterns.items():
@@ -202,6 +203,7 @@ def build_audit_meta(folder: Path) -> dict:
         "threats_count": len(threats),
         "severity_counts": severity_counts,
         "risk_level": compute_risk_level(severity_counts),
+        "coverage_gaps": parse_coverage_gaps(folder / "RESUMEN_EJECUTIVO.txt"),
         "modules": modules,
     }
 
@@ -557,6 +559,17 @@ def download_audit_pdf(audit_id: str):
         media_type="application/pdf",
         headers=_attachment(f"{audit_id}_reporte.pdf"),
     )
+
+
+def parse_coverage_gaps(path: Path) -> list:
+    """Extrae las comprobaciones omitidas de la seccion COBERTURA del resumen."""
+    if not path.exists():
+        return []
+    text = path.read_text(encoding="utf-8-sig", errors="replace")
+    match = re.search(r"^COBERTURA DE LA AUDITORIA\s*$(.*?)(?=^HALLAZGOS|^RECOMENDACIONES)", text, re.MULTILINE | re.DOTALL)
+    if not match:
+        return []
+    return [line.strip()[2:] for line in match.group(1).splitlines() if line.strip().startswith("- Omision:")]
 
 
 def parse_recommendations(path: Path) -> list:

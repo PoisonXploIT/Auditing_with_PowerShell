@@ -285,6 +285,15 @@ function dashboardHtml(a) {
     ? `<ul class="recs">${a.recommendations.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>`
     : `<div class="text-muted">Sin recomendaciones pendientes.</div>`;
 
+  const gaps = a.coverage_gaps || [];
+  const coverage = gaps.length
+    ? `<div class="card" style="border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);padding:12px">
+        <div style="font-size:12px;color:var(--text-faint);text-transform:uppercase;letter-spacing:0.5px">Cobertura: PARCIAL (${gaps.length} omisiones)</div>
+        <ul class="recs" style="margin-top:8px">${gaps.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>
+        <div class="text-muted" style="margin-top:6px;font-size:12px">Ejecuta la auditoria elevada para cerrar estas omisiones.</div>
+      </div>`
+    : "";
+
   const modules = a.modules
     .map(
       (m) => `<button class="card" style="text-align:left;cursor:pointer;padding:16px;border:1px solid var(--border);background:var(--surface);border-radius:var(--radius);color:var(--text);font-family:inherit" data-module="${esc(m.name)}">
@@ -326,6 +335,8 @@ function dashboardHtml(a) {
   </div>
 
   <div class="kpi-grid" style="margin-top:18px">${kpis}</div>
+
+  ${coverage}
 
   <div class="chart-row" style="margin-top:18px">
     <div class="card">${renderDonut(counts)}</div>

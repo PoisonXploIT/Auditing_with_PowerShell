@@ -66,6 +66,9 @@ $Global:CurrentModule = 0
 $Global:WarningsCount = 0
 $Global:ErrorsCount = 0
 $Global:ThreatsDetected = @()
+# Comprobaciones no ejecutadas (por falta de elevacion o por falta de habilitacion
+# de auditoria). Se declaran en el resumen para no vender cobertura inexistente.
+$Global:CoverageGaps = @()
 
 # Puertos sospechosos comunes (C2, backdoors, malware).
 # Solo se alertan cuando el DESTINO es externo: en loopback o red privada son
@@ -322,6 +325,14 @@ function Export-MultiFormat {
 .PARAMETER Details
     Objeto con detalles adicionales de la amenaza
 #>
+function Add-CoverageGap {
+    param([string]$Check, [string]$Reason)
+    $key = "$Check|$Reason"
+    if ($Global:CoverageGaps -notcontains $key) {
+        $Global:CoverageGaps += $key
+    }
+}
+
 function Test-PrivateOrLoopbackAddress {
     param([string]$Address)
     if (-not $Address) { return $true }
@@ -589,6 +600,7 @@ function Get-ProcessesAndServices {
         } else {
             Write-AuditLog "  -> Comprobacion de procesos sin ruta omitida (requiere elevacion)" -Level WARNING
             $Global:WarningsCount++
+            Add-CoverageGap -Check "Procesos sin ruta" -Reason "requiere elevacion"
         }
         
         if ($processesNoPath) {
@@ -775,6 +787,7 @@ function Get-SecurityEvents {
         if (-not (Test-Administrator)) {
             Write-AuditLog "[!] Ejecutando sin privilegios de administrador - Eventos de seguridad limitados" -Level WARNING
             $Global:WarningsCount++
+            Add-CoverageGap -Check "Logins fallidos (4625) y bloqueos (4740)" -Reason "requiere elevacion"
         }
         
         # Eventos de logins fallidos (Event ID 4625)
@@ -1300,6 +1313,8 @@ function Get-LOLBASDetection {
                     
                     Write-AuditLog "  -> Eventos LOLBAS en logs: $($lolbasEvents.Count)" -Level INFO
                 }
+            } else {
+                Add-CoverageGap -Check "Eventos LOLBAS 4688" -Reason "requiere elevacion"
             }
         } catch {
             Write-Verbose "No se pudieron leer eventos de LOLBAS (requiere auditoria de creacion de procesos habilitada)"
@@ -1332,6 +1347,7 @@ function Get-DriversAnalysis {
         } else {
             Write-AuditLog "  -> Analisis de drivers omitido (Get-WindowsDriver requiere elevacion)" -Level WARNING
             $Global:WarningsCount++
+            Add-CoverageGap -Check "Drivers instalados (Get-WindowsDriver)" -Reason "requiere elevacion"
             $drivers = @()
         }
         
@@ -1455,51 +1471,20 @@ function New-ExecutiveSummary {
         $endTime = Get-Date
         $duration = $endTime - $Global:ScriptStartTime
         
-        # Crear objeto de resumen
-        $summary = [PSCustomObject]@{
-    # "" = "" # CORREGIDO: Clave duplicada vacia eliminada
-            "RESUMEN EJECUTIVO DE AUDITORIA DE SEGURIDAD" = ""
-            "`n" = ""
-            
-            "Informacion General" = ""
-    # "" = "" # CORREGIDO: Clave duplicada vacia eliminada
-            "Sistema" = $env:COMPUTERNAME
-            "Usuario Ejecutor" = $env:USERNAME
-            "Privilegios" = if (Test-Administrator) { "Administrador" } else { "Usuario Normal" }
-            "Fecha Inicio" = $Global:ScriptStartTime.ToString("yyyy-MM-dd HH:mm:ss")
-            "Fecha Fin" = $endTime.ToString("yyyy-MM-dd HH:mm:ss")
-            "Duracion Total" = "$($duration.Minutes)m $($duration.Seconds)s"
-            "Directorio de Resultados" = $Global:AuditPath
-            " " = ""
-            
-            "Estadisticas de Ejecucion" = ""
-    # "" = "" # CORREGIDO: Clave duplicada vacia eliminada
-            "Modulos Ejecutados" = "$Global:CurrentModule / $Global:TotalModules"
-            "Errores Encontrados" = $Global:ErrorsCount
-            "Advertencias" = $Global:WarningsCount
-            "Amenazas Detectadas" = $Global:ThreatsDetected.Count
-            "  " = ""
-            
-            "Nivel de Riesgo General" = ""
-    # "" = "" # CORREGIDO: Clave duplicada vacia eliminada
-            "Amenazas CRITICAS" = ($Global:ThreatsDetected | Where-Object { $_.Severity -eq "CRITICAL" }).Count
-            "Amenazas ALTAS" = ($Global:ThreatsDetected | Where-Object { $_.Severity -eq "HIGH" }).Count
-            "Amenazas MEDIAS" = ($Global:ThreatsDetected | Where-Object { $_.Severity -eq "MEDIUM" }).Count
-            "Amenazas BAJAS" = ($Global:ThreatsDetected | Where-Object { $_.Severity -eq "LOW" }).Count
-        }
-        
         # Calcular nivel de riesgo general
         $criticalCount = ($Global:ThreatsDetected | Where-Object { $_.Severity -eq "CRITICAL" }).Count
         $highCount = ($Global:ThreatsDetected | Where-Object { $_.Severity -eq "HIGH" }).Count
         
+        # Nivel de riesgo normalizado: un solo token, sin prefijos, para que la UI
+        # y cualquier consumidor parseen el mismo valor.
         $riskLevel = if ($criticalCount -gt 0) {
-            "[CRITICO] CRITICO"
+            "CRITICO"
         } elseif ($highCount -gt 5) {
-            "[ALTO] ALTO"
+            "ALTO"
         } elseif ($highCount -gt 0) {
-            "[MEDIO] MEDIO"
+            "MEDIO"
         } else {
-            "[BAJO] BAJO"
+            "BAJO"
         }
         
         # Guardar resumen en formato texto
@@ -1537,6 +1522,21 @@ function New-ExecutiveSummary {
         "Amenazas ALTAS:       $(($Global:ThreatsDetected | Where-Object { $_.Severity -eq "HIGH" }).Count)" | Out-File $summaryPath -Append -Encoding UTF8
         "Amenazas MEDIAS:      $(($Global:ThreatsDetected | Where-Object { $_.Severity -eq "MEDIUM" }).Count)" | Out-File $summaryPath -Append -Encoding UTF8
         "Amenazas BAJAS:       $(($Global:ThreatsDetected | Where-Object { $_.Severity -eq "LOW" }).Count)" | Out-File $summaryPath -Append -Encoding UTF8
+        "" | Out-File $summaryPath -Append -Encoding UTF8
+        
+        # Cobertura real: deja claro que NO se miro, para no vender una auditoria
+        # completa cuando se ejecuto sin privilegios.
+        "COBERTURA DE LA AUDITORIA" | Out-File $summaryPath -Append -Encoding UTF8
+        "" | Out-File $summaryPath -Append -Encoding UTF8
+        if ($Global:CoverageGaps.Count -gt 0) {
+            "Cobertura: PARCIAL ($($Global:CoverageGaps.Count) comprobaciones omitidas)" | Out-File $summaryPath -Append -Encoding UTF8
+            foreach ($gap in $Global:CoverageGaps) {
+                $parts = $gap.Split('|')
+                "  - Omision: $($parts[0]) ($($parts[1]))" | Out-File $summaryPath -Append -Encoding UTF8
+            }
+        } else {
+            "Cobertura: COMPLETA (ninguna comprobacion omitida)" | Out-File $summaryPath -Append -Encoding UTF8
+        }
         "" | Out-File $summaryPath -Append -Encoding UTF8
         
         # Hallazgos criticos
