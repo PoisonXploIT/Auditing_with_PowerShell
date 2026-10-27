@@ -67,7 +67,9 @@ $Global:WarningsCount = 0
 $Global:ErrorsCount = 0
 $Global:ThreatsDetected = @()
 
-# Puertos sospechosos comunes (C2, backdoors, malware)
+# Puertos sospechosos comunes (C2, backdoors, malware).
+# Solo se alertan cuando el DESTINO es externo: en loopback o red privada son
+# trafico local (dev, servicios internos) y generan falsos positivos.
 $Global:SuspiciousPorts = @(4444, 5555, 6666, 7777, 8080, 8888, 9999, 31337, 12345, 1337, 6667)
 
 # Extensiones de archivos sospechosos para analisis
@@ -77,8 +79,17 @@ $Global:SuspiciousExtensions = @("*.exe", "*.dll", "*.ps1", "*.bat", "*.vbs", "*
 $Global:LOLBASBinaries = @(
     "certutil.exe", "regsvr32.exe", "mshta.exe", "bitsadmin.exe", 
     "regasm.exe", "regsvcs.exe", "msbuild.exe", "installutil.exe", 
-    "rundll32.exe", "odbcconf.exe", "wmic.exe", "powershell.exe", "cmd.exe"
+    "rundll32.exe", "odbcconf.exe", "wmic.exe", "powershell.exe", "pwsh.exe", "cmd.exe"
 )
+# Nombres sin extension, para comparar contra Get-Process (Name no incluye .exe).
+$Global:LOLBASNames = $Global:LOLBASBinaries -replace '\.exe$', ''
+# Regex unico para filtrar eventos 4688 (evita el bug de precedencia -in + -replace).
+$Global:LOLBASRegex = ($Global:LOLBASBinaries | ForEach-Object { [regex]::Escape($_) }) -join '|'
+
+# Deteccion de comando codificado: exige contexto de invocacion real de PowerShell
+# en la linea de comandos. Sin ese contexto, '-e' de grep, 'node -e' o 'bash -c'
+# se senalaban como comando codificado (falsos positivos CRITICAL).
+$Global:EncodedCommandPattern = '\b(powershell|pwsh)(\.exe)?\b[^|;&]*?\s-(e|en|enco|enc|enc' + 'oded)(com' + 'mand)?\b'
 
 # Patrones maliciosos comunes en PowerShell
 # Nota: las cadenas se construyen por concatenacion en runtime para evitar
@@ -91,7 +102,7 @@ $Global:MaliciousPatterns = @(
     '\binvoke' + '-expression\s+["''$]'
     '\biex\s+["''$]'
     '\|\s*iex\b'
-    '-(e|en|enco|enc|encod|enc' + 'oded)(com' + 'mand)?\b'
+    $Global:EncodedCommandPattern
     '\bnet\.web' + 'client\b'
     '\bdownload' + 'string\b'
     '\bdownload' + 'file\b'
@@ -311,6 +322,18 @@ function Export-MultiFormat {
 .PARAMETER Details
     Objeto con detalles adicionales de la amenaza
 #>
+function Test-PrivateOrLoopbackAddress {
+    param([string]$Address)
+    if (-not $Address) { return $true }
+    $a = $Address.ToLower()
+    if ($a -eq 'localhost' -or $a.StartsWith('::1') -or $a.StartsWith('127.')) { return $true }
+    if ($a -match '^10\.') { return $true }
+    if ($a -match '^172\.(1[6-9]|2[0-9]|3[0-1])\.') { return $true }
+    if ($a -match '^192\.168\.') { return $true }
+    if ($a -match '^169\.254\.') { return $true }
+    return $false
+}
+
 function Add-ThreatDetection {
     param(
         [string]$ThreatType,
@@ -319,6 +342,17 @@ function Add-ThreatDetection {
         [string]$Description,
         $Details
     )
+    
+    # Deduplicacion: la misma deteccion no debe contar dos veces (infla el riesgo).
+    $key = "$ThreatType|$Description"
+    if (-not $Global:ThreatKeys) {
+        $Global:ThreatKeys = New-Object System.Collections.Generic.HashSet[string]
+    }
+    if ($Global:ThreatKeys.Contains($key)) {
+        Write-Verbose "Amenaza duplicada omitida: $key"
+        return
+    }
+    [void]$Global:ThreatKeys.Add($key)
     
     $threat = [PSCustomObject]@{
         Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -329,6 +363,7 @@ function Add-ThreatDetection {
     }
     
     $Global:ThreatsDetected += $threat
+    Write-AuditLog "  [!] [$Severity] $ThreatType : $Description" -Level WARNING
     
     # Actualizar estado en modo headless con el recuento de amenazas
     if ($Global:Headless -and $Global:StatusFile) {
@@ -580,17 +615,17 @@ function Get-ProcessesAndServices {
             if ($_.CommandLine) {
                 $cmdLine = $_.CommandLine.ToLower()
                 
-                # Detectar comando codificado en Base64
-                if ($cmdLine -match ('-(e|en|enco|enc|encod|enc' + 'oded)(com' + 'mand)?\b')) {
+                # Detectar comando codificado en Base64 (solo con contexto de PowerShell).
+                if ($cmdLine -match $Global:EncodedCommandPattern) {
                     Add-ThreatDetection -ThreatType "Comando codificado" -Severity "CRITICAL" `
-                        -Description "Proceso '$($_.Name)' (PID: $($_.ProcessId)) usando comando codificado" -Details $_
+                        -Description "Proceso '$($_.Name)' (PID: $($_.ProcessId)) invoca PowerShell con comando codificado" -Details $_
                 }
                 
-                # Detectar patrones maliciosos
+                # Detectar patrones maliciosos (uno por proceso, para no duplicar severidad)
                 foreach ($pattern in $Global:MaliciousPatterns) {
                     if ($cmdLine -match $pattern.ToLower()) {
                         Add-ThreatDetection -ThreatType "Patron malicioso detectado" -Severity "HIGH" `
-                            -Description "Proceso '$($_.Name)' contiene patron '$pattern'" -Details $_
+                            -Description "Proceso '$($_.Name)' (PID: $($_.ProcessId)) contiene patron malicioso en su linea de comandos" -Details $_
                         break
                     }
                 }
@@ -659,9 +694,9 @@ function Get-NetworkAnalysis {
         
         # Detectar conexiones a puertos sospechosos
         $establishedConnections | ForEach-Object {
-            if ($_.RemotePort -in $Global:SuspiciousPorts) {
+            if ($_.RemotePort -in $Global:SuspiciousPorts -and -not (Test-PrivateOrLoopbackAddress $_.RemoteAddress)) {
                 Add-ThreatDetection -ThreatType "Conexion a puerto sospechoso" -Severity "HIGH" `
-                    -Description "Proceso '$($_.ProcessName)' conectado a puerto sospechoso $($_.RemotePort)" -Details $_
+                    -Description "Proceso '$($_.ProcessName)' conectado a puerto sospechoso $($_.RemotePort) en $($_.RemoteAddress)" -Details $_
             }
             
             # Detectar conexiones externas de procesos del sistema.
@@ -824,6 +859,8 @@ function Get-SecurityEvents {
                     }
                     $scriptBlock = if ($_.ScriptBlock) { $_.ScriptBlock.ToLower() } else { "" }
                     
+                    # El scriptblock ya es codigo PowerShell: aqui si tiene sentido el
+                    # patron generic de -enc/-e sin contexto de interprete.
                     if ($scriptBlock -match ('-(e|en|enco|enc|encod|enc' + 'oded)(com' + 'mand)?\b')) {
                         Add-ThreatDetection -ThreatType "PowerShell comando codificado" -Severity "HIGH" `
                             -Description "Comando PowerShell codificado detectado" -Details $_
@@ -1216,7 +1253,7 @@ function Get-LOLBASDetection {
     try {
         # Buscar procesos LOLBAS actualmente en ejecucion
         $lolbasProcesses = Get-Process | Where-Object { 
-            $_.Name -in $Global:LOLBASBinaries -replace ".exe", ""
+            $_.Name -in $Global:LOLBASNames
         } | Select-Object Name, Id, Path, Company, StartTime,
             @{Name="CommandLine"; Expression={
                 (Get-WmiObject Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine
@@ -1230,7 +1267,7 @@ function Get-LOLBASDetection {
             $lolbasProcesses | ForEach-Object {
                 $cmdLine = $_.CommandLine
                 
-                if ($cmdLine -match ('-(e|en|enco|enc|encod|enc' + 'oded)(com' + 'mand)?\b|-urlcache|\b-split\b|-f\s+http')) {
+                if ($cmdLine -match ('\b(powershell|pwsh)(\.exe)?\b[^|;&]*?\s-(e|en|enco|enc|enc' + 'oded)(com' + 'mand)?\b|-urlcache|\b-split\b|-f\s+http')) {
                     Add-ThreatDetection -ThreatType "Uso sospechoso de LOLBAS" -Severity "HIGH" `
                         -Description "Proceso LOLBAS '$($_.Name)' con argumentos sospechosos" -Details $_
                 }
@@ -1246,8 +1283,8 @@ function Get-LOLBASDetection {
                     LogName='Security';
                     ID=4688
                 } -MaxEvents 500 -ErrorAction SilentlyContinue | Where-Object {
-                    $processName = $_.Properties[5].Value
-                    $Global:LOLBASBinaries | ForEach-Object { $processName -match $_ }
+                    $processName = "$($_.Properties[5].Value)"
+                    $processName -match $Global:LOLBASRegex
                 } | ForEach-Object {
                     [PSCustomObject]@{
                         TimeCreated = $_.TimeCreated
