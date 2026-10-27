@@ -385,12 +385,13 @@ function threatsTableHtml(threats) {
         <td class="mono" style="white-space:nowrap;color:var(--text-muted)">${esc(t.timestamp || "—")}</td>
         <td style="font-weight:600">${esc(t.type || "—")}</td>
         <td>${esc(t.description || "—")}</td>
+        <td class="mono" style="white-space:nowrap">${t.mitre_technique ? `<a href="${esc(t.mitre_url)}" target="_blank" rel="noopener noreferrer" title="${esc(t.mitre_name || "")} - ${esc(t.mitre_tactic || "")}">${esc(t.mitre_technique)}</a>` : "—"}</td>
         <td><details><summary style="cursor:pointer;color:var(--accent)">Detalle</summary><div class="mono text-muted" style="margin-top:6px;white-space:pre-wrap">${esc(typeof t.details === "string" ? t.details : JSON.stringify(t.details, null, 2))}</div></details></td>
       </tr>`
     )
     .join("");
   return `<div class="table-wrap"><table>
-    <thead><tr><th>Severidad</th><th>Fecha</th><th>Tipo</th><th>Descripcion</th><th>Detalle</th></tr></thead>
+    <thead><tr><th>Severidad</th><th>Fecha</th><th>Tipo</th><th>Descripcion</th><th>MITRE</th><th>Detalle</th></tr></thead>
     <tbody>${rows}</tbody>
   </table></div>`;
 }

@@ -158,6 +158,10 @@ def load_threats(folder: Path) -> list:
                 "severity": t.get("Severity", "LOW"),
                 "description": t.get("Description"),
                 "details": t.get("Details"),
+                "mitre_technique": t.get("MitreTechnique", ""),
+                "mitre_name": t.get("MitreName", ""),
+                "mitre_tactic": t.get("MitreTactic", ""),
+                "mitre_url": t.get("MitreUrl", ""),
             }
         )
     return normalized
@@ -403,7 +407,7 @@ def download_audit_csv(audit_id: str):
     threats = _threats_sorted(folder)
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["timestamp", "severity", "type", "description", "details"])
+    writer.writerow(["timestamp", "severity", "type", "description", "details", "mitre_technique", "mitre_tactic"])
     for t in threats:
         details = t.get("details")
         if not isinstance(details, str):
@@ -415,6 +419,8 @@ def download_audit_csv(audit_id: str):
                 t.get("type", ""),
                 t.get("description", ""),
                 details or "",
+                t.get("mitre_technique", ""),
+                t.get("mitre_tactic", ""),
             ]
         )
     return Response(

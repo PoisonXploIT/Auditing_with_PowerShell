@@ -118,6 +118,36 @@ $Global:MaliciousPatterns = @(
     '\bget-gpp' + 'password\b'
     'new-object\s+-comobject\s+wscript\.shell'
 )
+# Mapeo de cada deteccion a MITRE ATT&CK (Enterprise). Validado contra el extracto
+# local de ATT&CK (15 tacticas, 220 tecnicas, 476 subtecnicas; ver
+# C:\Users\Sammi\AI\attack_enterprise.json). El dataset completo NO va en el repo:
+# solo se necesitan las 22 tecnicas que este script emite.
+$Global:MitreMap = @{
+    "Comando codificado"                        = @{ Id = "T1027.010"; Name = "Command Obfuscation"; Tactic = "Stealth" }
+    "PowerShell comando codificado"             = @{ Id = "T1027.010"; Name = "Command Obfuscation"; Tactic = "Stealth" }
+    "Patron malicioso detectado"                = @{ Id = "T1059.001"; Name = "PowerShell"; Tactic = "Execution" }
+    "PowerShell patron malicioso"               = @{ Id = "T1059.001"; Name = "PowerShell"; Tactic = "Execution" }
+    "Uso sospechoso de LOLBAS"                  = @{ Id = "T1218"; Name = "System Binary Proxy Execution"; Tactic = "Stealth" }
+    "Proceso sin ruta"                          = @{ Id = "T1055"; Name = "Process Injection"; Tactic = "Privilege Escalation" }
+    "Proceso del sistema con conexion externa"  = @{ Id = "T1036.005"; Name = "Match Legitimate Resource Name or Location"; Tactic = "Stealth" }
+    "Conexion a puerto sospechoso"              = @{ Id = "T1095"; Name = "Non-Application Layer Protocol"; Tactic = "Command and Control" }
+    "Usuario sin contrasena"                    = @{ Id = "T1078.003"; Name = "Local Accounts"; Tactic = "Privilege Escalation" }
+    "Usuario habilitado sin uso"                = @{ Id = "T1078.003"; Name = "Local Accounts"; Tactic = "Privilege Escalation" }
+    "Posible ataque de fuerza bruta"            = @{ Id = "T1110.003"; Name = "Password Spraying"; Tactic = "Credential Access" }
+    "Run Key sospechoso"                        = @{ Id = "T1547.001"; Name = "Registry Run Keys / Startup Folder"; Tactic = "Persistence" }
+    "Run Key con script"                        = @{ Id = "T1547.001"; Name = "Registry Run Keys / Startup Folder"; Tactic = "Persistence" }
+    "Archivo ejecutable oculto"                 = @{ Id = "T1564.001"; Name = "Hidden Files and Directories"; Tactic = "Stealth" }
+    "Entrada sospechosa en HOSTS"               = @{ Id = "T1557.001"; Name = "Name Resolution Poisoning and SMB Relay"; Tactic = "Credential Access" }
+    "Firewall deshabilitado"                    = @{ Id = "T1686.003"; Name = "Windows Host Firewall"; Tactic = "Defense Impairment" }
+    "Windows Defender deshabilitado"            = @{ Id = "T1685"; Name = "Disable or Modify Tools"; Tactic = "Defense Impairment" }
+    "Proteccion en tiempo real deshabilitada"   = @{ Id = "T1685"; Name = "Disable or Modify Tools"; Tactic = "Defense Impairment" }
+    "Firmas de antivirus desactualizadas"       = @{ Id = "T1685"; Name = "Disable or Modify Tools"; Tactic = "Defense Impairment" }
+    "UAC deshabilitado"                         = @{ Id = "T1112"; Name = "Modify Registry"; Tactic = "Defense Impairment" }
+    "Recurso compartido de disco"               = @{ Id = "T1021.002"; Name = "SMB/Windows Admin Shares"; Tactic = "Lateral Movement" }
+    "Recurso compartido sin restricciones"      = @{ Id = "T1021.002"; Name = "SMB/Windows Admin Shares"; Tactic = "Lateral Movement" }
+    "Driver sin firma digital"                  = @{ Id = "T1014"; Name = "Rootkit"; Tactic = "Stealth" }
+}
+
 # 
 # SECCION 2: FUNCIONES AUXILIARES
 # 
@@ -365,12 +395,18 @@ function Add-ThreatDetection {
     }
     [void]$Global:ThreatKeys.Add($key)
     
+    $mitre = $Global:MitreMap[$ThreatType]
+    
     $threat = [PSCustomObject]@{
         Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         ThreatType = $ThreatType
         Severity = $Severity
         Description = $Description
         Details = $Details
+        MitreTechnique = if ($mitre) { $mitre.Id } else { "" }
+        MitreName = if ($mitre) { $mitre.Name } else { "" }
+        MitreTactic = if ($mitre) { $mitre.Tactic } else { "" }
+        MitreUrl = if ($mitre) { "https://attack.mitre.org/techniques/" + $mitre.Id.Replace('.', '/') } else { "" }
     }
     
     $Global:ThreatsDetected += $threat
@@ -564,17 +600,23 @@ function Get-ProcessesAndServices {
     Write-AuditLog "Analizando procesos y servicios en ejecucion..." -Level INFO
     
     try {
-        # Procesos en ejecucion
-        $processes = Get-Process | Select-Object Name, Id, Path, Company, Product, 
+        # Procesos en ejecucion: una sola snapshot de Get-Process (se reutiliza abajo).
+        # La firma digital solo se comprueba para binarios FUERA de C:\Windows y con
+        # cache por ruta: firmar 500 binarios de sistema es lo que hace tardar 2 minutos.
+        $allProcesses = Get-Process
+        $sigCache = @{}
+        $processes = $allProcesses | Select-Object Name, Id, Path, Company, Product, 
             CPU, @{Name="Memory_MB"; Expression={[math]::Round($_.WorkingSet64/1MB, 2)}},
             StartTime, SessionId,
             @{Name="Signed"; Expression={
-                if ($_.Path) {
-                    $sig = Get-AuthenticodeSignature $_.Path -ErrorAction SilentlyContinue
-                    $sig.Status -eq 'Valid'
-                } else {
-                    $false
+                $p = $_.Path
+                if (-not $p) { return $null }
+                if ($p.ToLower().StartsWith('c:\windows')) { return $true }
+                if (-not $sigCache.ContainsKey($p)) {
+                    try { $sigCache[$p] = (Get-AuthenticodeSignature -LiteralPath $p).Status }
+                    catch { $sigCache[$p] = 'UnknownError' }
                 }
+                return $sigCache[$p] -eq 'Valid'
             }}
         
         $outputPath = Join-Path $Global:AuditPath "03_Procesos\procesos_activos"
@@ -594,7 +636,7 @@ function Get-ProcessesAndServices {
         # generaria falsos positivos masivos; solo tiene sentido con privilegios de admin.
         $processesNoPath = @()
         if (Test-Administrator) {
-            $processesNoPath = Get-Process | Where-Object { 
+            $processesNoPath = $allProcesses | Where-Object { 
                 $null -eq $_.Path -and $_.Name -notin $protectedProcessNames
             }
         } else {
@@ -645,10 +687,14 @@ function Get-ProcessesAndServices {
         }
         
         # Servicios del sistema
+        # Una sola consulta CIM para todas las rutas de binario (antes ~300 consultas
+        # WMI individuales, una por servicio).
+        $serviceBinaries = @{}
+        foreach ($svc in Get-CimInstance -ClassName Win32_Service -ErrorAction SilentlyContinue) {
+            $serviceBinaries[$svc.Name] = $svc.PathName
+        }
         $services = Get-Service | Select-Object Name, DisplayName, Status, StartType,
-            @{Name="BinaryPath"; Expression={
-                (Get-WmiObject Win32_Service -Filter "Name='$($_.Name)'" -ErrorAction SilentlyContinue).PathName
-            }}
+            @{Name="BinaryPath"; Expression={ $serviceBinaries[$_.Name] }}
         
         $outputPath = Join-Path $Global:AuditPath "03_Procesos\servicios"
         Export-MultiFormat -Data $services -BasePath $outputPath -Title "Servicios del Sistema"
@@ -679,9 +725,13 @@ function Get-NetworkAnalysis {
     Write-AuditLog "Analizando red y conexiones activas..." -Level INFO
     
     try {
+        # Mapa PID -> proceso: evita un Get-Process por cada conexion (400+ llamadas).
+        $procById = @{}
+        foreach ($p in Get-Process) { $procById[$p.Id] = $p }
+
         # Conexiones TCP activas con informacion de proceso
         $tcpConnections = Get-NetTCPConnection | ForEach-Object {
-            $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
+            $proc = $procById[$_.OwningProcess]
             
             [PSCustomObject]@{
                 LocalAddress = $_.LocalAddress
@@ -732,7 +782,7 @@ function Get-NetworkAnalysis {
         
         # Endpoints UDP
         $udpEndpoints = Get-NetUDPEndpoint | ForEach-Object {
-            $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
+            $proc = $procById[$_.OwningProcess]
             
             [PSCustomObject]@{
                 LocalAddress = $_.LocalAddress
@@ -1265,12 +1315,16 @@ function Get-LOLBASDetection {
     
     try {
         # Buscar procesos LOLBAS actualmente en ejecucion
+        # Lineas de comando de todos los procesos en una sola consulta CIM.
+        $cmdByPid = @{}
+        foreach ($proc in Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue) {
+            $cmdByPid[$proc.ProcessId] = $proc.CommandLine
+        }
+
         $lolbasProcesses = Get-Process | Where-Object { 
             $_.Name -in $Global:LOLBASNames
         } | Select-Object Name, Id, Path, Company, StartTime,
-            @{Name="CommandLine"; Expression={
-                (Get-WmiObject Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine
-            }}
+            @{Name="CommandLine"; Expression={ $cmdByPid[$_.Id] }}
         
         if ($lolbasProcesses) {
             $outputPath = Join-Path $Global:AuditPath "08_LOLBAS\procesos_lolbas_activos"
