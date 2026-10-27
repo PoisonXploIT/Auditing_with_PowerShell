@@ -162,6 +162,7 @@ def load_threats(folder: Path) -> list:
                 "mitre_name": t.get("MitreName", ""),
                 "mitre_tactic": t.get("MitreTactic", ""),
                 "mitre_url": t.get("MitreUrl", ""),
+                "signature": t.get("Signature", ""),
             }
         )
     return normalized
@@ -208,6 +209,7 @@ def build_audit_meta(folder: Path) -> dict:
         "severity_counts": severity_counts,
         "risk_level": compute_risk_level(severity_counts),
         "coverage_gaps": parse_coverage_gaps(folder / "RESUMEN_EJECUTIVO.txt"),
+        "suppressed": parse_suppressed(folder / "RESUMEN_EJECUTIVO.txt"),
         "modules": modules,
     }
 
@@ -322,7 +324,89 @@ def get_audit(audit_id: str):
         key=lambda t: SEVERITY_ORDER.get((t.get("severity") or "LOW").upper(), 9),
     )
     meta["recommendations"] = parse_recommendations(folder / "RESUMEN_EJECUTIVO.txt")
+    meta["trend"] = compute_trend(folder)
     return meta
+
+
+def _audit_folders() -> list:
+    """Auditorias ordenadas de mas antigua a mas nueva (el nombre lleva el timestamp)."""
+    if not RESULTS_DIR.exists():
+        return []
+    return sorted(
+        [c for c in RESULTS_DIR.iterdir() if c.is_dir() and c.name.startswith("Auditoria_")],
+        key=lambda p: p.name,
+    )
+
+
+def compute_trend(folder: Path) -> dict:
+    """Diff de amenazas entre esta auditoria y la inmediatamente anterior.
+
+    La comparacion usa la firma normalizada (ThreatType + descripcion sin PID),
+    no la descripcion cruda: un PID distinto no es una amenaza nueva.
+    """
+    folders = _audit_folders()
+    try:
+        idx = folders.index(folder)
+    except ValueError:
+        return {"previous": None, "status": "primera auditoria"}
+    if idx == 0:
+        return {"previous": None, "status": "primera auditoria"}
+
+    prev = folders[idx - 1]
+    prev_meta = build_audit_meta(prev)
+    cur_meta = build_audit_meta(folder)
+
+    cur_sigs = {t["signature"] for t in load_threats(folder) if t.get("signature")}
+    prev_sigs = {t["signature"] for t in load_threats(prev) if t.get("signature")}
+    cur_threats = {t["signature"]: t for t in load_threats(folder) if t.get("signature")}
+    prev_threats = {t["signature"]: t for t in load_threats(prev) if t.get("signature")}
+
+    new = [cur_threats[s] for s in sorted(cur_sigs - prev_sigs)]
+    resolved = [prev_threats[s] for s in sorted(prev_sigs - cur_sigs)]
+    persistent = sorted(cur_sigs & prev_sigs)
+
+    return {
+        "previous": prev.name,
+        "previous_threats": prev_meta["threats_count"],
+        "previous_risk": prev_meta["risk_level"],
+        "previous_suppressed": len(prev_meta["suppressed"]),
+        "new": new,
+        "resolved": resolved,
+        "persistent": len(persistent),
+        "delta": cur_meta["threats_count"] - prev_meta["threats_count"],
+        "risk_change": (prev_meta["risk_level"] if prev_meta["risk_level"] != cur_meta["risk_level"] else "sin cambio"),
+    }
+
+
+@app.get("/api/audits/{audit_id}/trend")
+def audit_trend(audit_id: str):
+    folder = _safe_audit_dir(audit_id)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Auditoria no encontrada")
+    return compute_trend(folder)
+
+
+@app.get("/api/trend")
+def trend_series():
+    """Serie temporal de todas las auditorias: amenazas, riesgo y suprimidas."""
+    series = []
+    for f in _audit_folders():
+        meta = build_audit_meta(f)
+        series.append(
+            {
+                "id": meta["id"],
+                "folder": meta["folder"],
+                "threats": meta["threats_count"],
+                "risk": meta["risk_level"],
+                "suppressed": len(meta["suppressed"]),
+                "critical": meta["severity_counts"].get("CRITICAL", 0),
+                "high": meta["severity_counts"].get("HIGH", 0),
+                "medium": meta["severity_counts"].get("MEDIUM", 0),
+                "low": meta["severity_counts"].get("LOW", 0),
+                "duration": meta["summary"].get("duracion", ""),
+            }
+        )
+    return {"series": series}
 
 
 @app.get("/api/audits/{audit_id}/modules/{module_name}")
@@ -565,6 +649,40 @@ def download_audit_pdf(audit_id: str):
         media_type="application/pdf",
         headers=_attachment(f"{audit_id}_reporte.pdf"),
     )
+
+
+def parse_suppressed(path: Path) -> list:
+    """Extrae las amenazas suprimidas por la allowlist del RESUMEN_EJECUTIVO.txt.
+
+    No se ocultan: una supresion sin justificacion es un hallazgo perdido.
+    """
+    if not path.exists():
+        return []
+    text = path.read_text(encoding="utf-8-sig", errors="replace")
+    match = re.search(
+        r"^AMENAZAS SUPRIMIDAS POR ALLOWLIST LOCAL\s*$(.*?)(?=^COBERTURA|^HALLAZGOS|^RECOMENDACIONES)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    if not match:
+        return []
+    items = []
+    current = None
+    for line in match.group(1).splitlines():
+        line = line.strip()
+        if not line or line.startswith("Suprimidas:"):
+            continue
+        if line.startswith("- "):
+            m = re.match(r"^- \[([A-Z]+)\] (.*?) \| (.*)$", line)
+            if m:
+                current = {"severity": m.group(1), "type": m.group(2), "description": m.group(3)}
+                items.append(current)
+        elif line.startswith("Motivo:") and current is not None:
+            m = re.match(r"^Motivo: (.*?) \[allowlist: (.*)\]$", line)
+            if m:
+                current["reason"] = m.group(1)
+                current["allowlist_id"] = m.group(2)
+    return items
 
 
 def parse_coverage_gaps(path: Path) -> list:

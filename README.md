@@ -445,6 +445,62 @@ Get-ChildItem -Path "Auditoria_*" -Filter "*.json" -Recurse | ForEach-Object {
 
 ---
 
+## Allowlist local, selftest de detección y tendencia
+
+### Allowlist (`-AllowlistPath`)
+
+El ruido hace inservible un informe. El script trae una allowlist built-in con la
+justificación de cada entrada (Splunk Web en 9999, Git Bash, Tailscale, syncthing,
+Node de desarrollo, PostgreSQL local). Cada supresión se **declara** en el resumen
+ejecutivo y en `auditoria.log`; no se silencia.
+
+Una entrada suprime solo los `ThreatTypes` listados, nunca todo lo que haga el proceso:
+
+```json
+{
+  "entries": [
+    {
+      "id": "splunk-local",
+      "threatTypes": ["Puerto sospechoso en escucha"],
+      "ports": [8088, 8089, 9997, 9999],
+      "process": "splunkd",
+      "reason": "Splunk Web y su API, no un C2"
+    }
+  ]
+}
+```
+
+```powershell
+.\Invoke-SecurityAudit.ps1 -AllowlistPath C:\audit\allowlist.json
+```
+
+La allowlist externa se **fusiona** con la built-in (no la sustituye). Una entrada debe
+definir al menos `process` o `ports`.
+
+### Selftest de detección (`-SelfTest`)
+
+102 casos de regex, LOLBAS, direcciones privadas, MITRE, allowlist, deduplicación y
+firmas. No audita nada y devuelve 1 si algún caso falla (útil en CI):
+
+```powershell
+.\Invoke-SecurityAudit.ps1 -SelfTest
+```
+
+Cubre los falsos positivos históricos: `bash -c "grep -E ..."`, `node -e`, `python -c`
+no disparan "comando codificado"; solo `powershell`/`pwsh` con `-enc`.
+
+### Tendencia entre auditorías
+
+Cada amenaza lleva una `Signature` (SHA-256 truncada de `ThreatType + descripción sin
+PID ni fechas), de modo que dos ejecuciones de la misma detección se comparan aunque
+cambie el PID.
+
+- `GET /api/trend` — serie temporal de todas las auditorías (amenazas, riesgo, suprimidas, duración).
+- `GET /api/audits/{id}/trend` — diff con la auditoría anterior: amenazas nuevas, resueltas y recurrentes.
+- La UI muestra una tarjeta "Tendencia frente a <anterior>" y otra con las suprimidas por allowlist.
+
+---
+
 ##  Solución de Problemas
 
 ### Problema: "Script no se ejecuta - Política de ejecución"

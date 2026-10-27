@@ -294,6 +294,31 @@ function dashboardHtml(a) {
       </div>`
     : "";
 
+  const suppressed = a.suppressed || [];
+  const suppressedCard = suppressed.length
+    ? `<div class="card" style="border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);padding:12px">
+        <div style="font-size:12px;color:var(--text-faint);text-transform:uppercase;letter-spacing:0.5px">Suprimidas por allowlist (${suppressed.length})</div>
+        <ul class="recs" style="margin-top:8px">${suppressed.map((s) => `<li><strong>${esc(s.type)}</strong> (${esc(s.severity)}) — ${esc(s.description)}<br><span class="text-muted" style="font-size:12px">Motivo: ${esc(s.reason || "—")} [${esc(s.allowlist_id || "")}]</span></li>`).join("")}</ul>
+        <div class="text-muted" style="margin-top:6px;font-size:12px">No cuentan en el nivel de riesgo. Edita la allowlist en el script o pasa -AllowlistPath con un JSON propio.</div>
+      </div>`
+    : "";
+
+  const trend = a.trend || {};
+  const trendCard = trend.previous
+    ? `<div class="card" style="border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);padding:12px">
+        <div style="font-size:12px;color:var(--text-faint);text-transform:uppercase;letter-spacing:0.5px">Tendencia frente a ${esc(trend.previous)}</div>
+        <div class="flex" style="gap:14px;margin-top:8px;flex-wrap:wrap">
+          <span>Amenazas: ${trend.previous_threats} → ${a.threats_count} (${trend.delta > 0 ? "+" : ""}${trend.delta})</span>
+          <span>Riesgo: ${esc(trend.previous_risk)} → ${esc(a.risk_level)}${trend.risk_change === "sin cambio" ? " (sin cambio)" : ""}</span>
+          <span>Nuevas: ${trend.new.length}</span>
+          <span>Resueltas: ${trend.resolved.length}</span>
+          <span>Recurrentes: ${trend.persistent}</span>
+        </div>
+        ${trend.new.length ? `<ul class="recs" style="margin-top:8px">${trend.new.map((t) => `<li>[${esc(t.severity)}] ${esc(t.type)} — ${esc(t.description)}</li>`).join("")}</ul>` : ""}
+        ${trend.resolved.length ? `<ul class="recs" style="margin-top:8px">${trend.resolved.map((t) => `<li>Resuelta: [${esc(t.severity)}] ${esc(t.type)} — ${esc(t.description)}</li>`).join("")}</ul>` : ""}
+      </div>`
+    : "";
+
   const modules = a.modules
     .map(
       (m) => `<button class="card" style="text-align:left;cursor:pointer;padding:16px;border:1px solid var(--border);background:var(--surface);border-radius:var(--radius);color:var(--text);font-family:inherit" data-module="${esc(m.name)}">
@@ -337,6 +362,8 @@ function dashboardHtml(a) {
   <div class="kpi-grid" style="margin-top:18px">${kpis}</div>
 
   ${coverage}
+  ${suppressedCard}
+  ${trendCard}
 
   <div class="chart-row" style="margin-top:18px">
     <div class="card">${renderDonut(counts)}</div>
