@@ -707,6 +707,10 @@ class AiConfigRequest(BaseModel):
     llm_enabled: Optional[bool] = None
     llm_base_url: Optional[str] = None
     llm_model: Optional[str] = None
+    # LAYA local (laya-serve): segunda opcion conmutable (cloud|local).
+    backend: Optional[str] = None
+    laya_base_url: Optional[str] = None
+    laya_model: Optional[str] = None
 
 
 class AiTestRequest(BaseModel):
@@ -730,6 +734,13 @@ def set_ai_config(req: AiConfigRequest):
             status_code=400,
             detail="El LLM local solo puede apuntar a loopback (127.0.0.1 / localhost / ::1)",
         )
+    if "laya_base_url" in patch and not ai_enrich.is_loopback_url(patch["laya_base_url"]):
+        raise HTTPException(
+            status_code=400,
+            detail="El backend LAYA local solo puede apuntar a loopback (127.0.0.1 / localhost / ::1)",
+        )
+    if "backend" in patch and patch["backend"] not in ("cloud", "local"):
+        raise HTTPException(status_code=400, detail="backend debe ser 'cloud' o 'local'")
     return ai_enrich.set_ai_config(patch)
 
 

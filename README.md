@@ -99,16 +99,18 @@ El script acepta parámetros para ejecutarse sin interacción, usados internamen
 La interfaz incluye una capa IA **opcional y referencial** que enriquece el informe de cada auditoría sin modificar sus datos. En el detalle de la auditoría (Panel General) aparece la tarjeta **IA — Veredictos (Jev) y Explicaciones Técnicas (LLM local)**:
 
 - **Jev (TypeSafe, nube)**: mismo contrato de API que sec-dashboard (`POST {base_url}` con `{model, state, questions}`, modelo pin `jev-1.13.0`). Por cada amenaza calcula veredicto (`true_positive`/`false_positive`/`noise`), confianza, severidad IA (0-3) y urgencia de acción (0-1). De ahí se deriva la **probabilidad de falso positivo** (`true_positive` → 1 − confianza; resto → confianza).
+- **LAYA local (segunda opción, opt-in)**: backend `local` contra `laya-serve` (default `http://127.0.0.1:8787`, modelo `multilingual` = FT v4), mismo contrato de salida que Jev (`verdict / confidence / severity_score / immediate_action / prob_false_positive`). POST `{laya_base_url}/batch` con plantilla única y criteria en orden live (`true_positive, false_positive, noise`); `immediate action` = "yes" si P(true) >= 0.5. **Fail-safe**: si el serve local cae, degrada al camino cloud/Jev igual (y si no hay key, devuelve `skipped` con razón); nunca lanza y la auditoría nunca se rompe. Solo instancias locales (loopback validado por el backend).
 - **LLM local (técnico)**: servidor OpenAI-compatible **solo loopback** (127.0.0.1/localhost/::1, sin API key). Actúa como técnico de ciberseguridad y produce, en español: por amenaza `{resumen, porque, sugerencia}` y un **resumen ejecutivo** de toda la auditoría (`resumen_ejecutivo`, `riesgo_principal`, `acciones_prioritarias[]`).
 - Pulsar **Enriquecer informe con IA** genera todo y persiste dos archivos en la carpeta de la auditoría: `IA_ENRICH.json` (datos) e `IA_RESUMEN_EJECUTIVO.md` (informe legible). Al volver a abrir la auditoría, los resultados guardados se muestran automáticamente.
 
 Configuración (solo memoria; se pierde al reiniciar el servidor):
+- **Backend IA** (fila del panel): selector `cloud`/`local` + URL del serve LAYA + modelo → *Guardar*. Default: `cloud`. El modo `local` solo tiene sentido en la instancia local; el despliegue público no puede alcanzar `127.0.0.1:8787` (ahí sigue Jev).
 - **Jev**: pegar API key → *Guardar Jev* → *Probar Jev*.
 - **LLM local**: base URL loopback + nombre de modelo → *Guardar LLM* → *Probar LLM*. Sin GPU o modelo local: déjelo deshabilitado; nada cambia.
 
 Reglas de seguridad: key Jev solo en memoria (maskeda en lecturas, se envía solo a `api.typesafe.ai`); LLM forzado loopback por el backend; cada fase degrada de forma independiente (ningún error rompe la vista ni el informe); sin dependencias nuevas (solo stdlib).
 
-Endpoints: `GET/POST /api/ai/config`, `POST /api/ai/test` (`{"target": "jev"|"llm"}`), `POST /api/ai/enrich` (`{"audit_id": ...}`), `GET /api/ai/enrich/{audit_id}`.
+Endpoints: `GET/POST /api/ai/config`, `POST /api/ai/test` (`{"target": "jev"|"llm"}`; con `backend=local`, `jev` enruta al selftest local), `POST /api/ai/enrich` (`{"audit_id": ...}`), `GET /api/ai/enrich/{audit_id}`.
 
 Tests sin red: desde `ui/` → `python -m unittest tests.test_ai_enrich -v`.
 

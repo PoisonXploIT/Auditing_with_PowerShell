@@ -399,6 +399,16 @@ function aiCardHtml() {
         <button class="btn btn-ghost" id="btn-ai-test-jev">Probar Jev</button>
       </div>
       <div class="flex" style="gap:8px;align-items:center;flex-wrap:wrap">
+        <span class="mono text-muted" style="min-width:150px">Backend veredictos</span>
+        <select class="input mono" id="ai-backend" style="max-width:120px">
+          <option value="cloud">cloud (Jev)</option>
+          <option value="local">local (LAYA)</option>
+        </select>
+        <input class="input mono" id="ai-laya-url" placeholder="http://127.0.0.1:8787/v1/systemone" style="max-width:260px" />
+        <input class="input mono" id="ai-laya-model" placeholder="multilingual" style="max-width:140px" />
+        <button class="btn btn-ghost" id="btn-ai-save-backend">Guardar backend</button>
+      </div>
+      <div class="flex" style="gap:8px;align-items:center;flex-wrap:wrap">
         <span class="mono text-muted" style="min-width:150px">LLM local (tecnico)</span>
         <input class="input mono" id="ai-llm-url" placeholder="http://127.0.0.1:8099" style="max-width:220px" />
         <input class="input mono" id="ai-llm-model" placeholder="modelo" style="max-width:220px" />
@@ -549,6 +559,12 @@ async function bindAiCard(el, a) {
     if (jk) jk.value = cfg.jev_api_key || "";
     if (lu) lu.value = cfg.llm_base_url || "";
     if (lm) lm.value = cfg.llm_model || "";
+    const bk = el.querySelector("#ai-backend");
+    const lurl = el.querySelector("#ai-laya-url");
+    const lmod = el.querySelector("#ai-laya-model");
+    if (bk) bk.value = cfg.backend || "cloud";
+    if (lurl) lurl.value = cfg.laya_base_url || "";
+    if (lmod) lmod.value = cfg.laya_model || "";
   } catch (e) { /* config no disponible */ }
 
   // Cargar enriquecimiento guardado, si existe.
@@ -563,6 +579,20 @@ async function bindAiCard(el, a) {
     try {
       await api("/api/ai/config", { method: "POST", body: JSON.stringify({ jev_enabled: true, jev_api_key: key }) });
       toast("Config Jev guardada (solo memoria).", "success");
+    } catch (e) { toast(e.message, "error"); }
+  });
+
+  const saveBackend = el.querySelector("#btn-ai-save-backend");
+  if (saveBackend) saveBackend.addEventListener("click", async () => {
+    const backend = (el.querySelector("#ai-backend") || {}).value || "cloud";
+    const url = ((el.querySelector("#ai-laya-url") || {}).value || "").trim();
+    const model = ((el.querySelector("#ai-laya-model") || {}).value || "").trim();
+    try {
+      const body = { backend };
+      if (url) body.laya_base_url = url;
+      if (model) body.laya_model = model;
+      await api("/api/ai/config", { method: "POST", body: JSON.stringify(body) });
+      toast(`Backend guardado: ${backend} (solo memoria).`, "success");
     } catch (e) { toast(e.message, "error"); }
   });
 

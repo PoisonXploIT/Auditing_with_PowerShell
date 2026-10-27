@@ -25,6 +25,7 @@ Reglas (mismas que sec-dashboard):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -39,6 +40,12 @@ from urllib.request import Request, urlopen
 PINNED_MODEL = "jev-1.13.0"
 DEFAULT_JEV_BASE_URL = "https://api.typesafe.ai/v1/systemone"
 
+# LAYA local (laya-serve en 127.0.0.1:8787, CPU): segunda opcion conmutable.
+# Cloud (Jev) sigue siendo el default; el local es opt-in y fail-safe.
+DEFAULT_LAYA_BASE_URL = "http://127.0.0.1:8787/v1/systemone"
+DEFAULT_LAYA_MODEL = "multilingual"
+_LAYA_ENV = Path(r"C:\Users\Sammi\ai-netwatch\data\laya_serve.env")
+
 JEV_MAX_THREATS = 25      # cap de amenazas por llamada Jev (data minimization)
 LLM_EXPLAIN_TOP_N = 10   # explicaciones LLM por amenaza (top por severidad)
 MAX_FIELD = 300           # chars maximo por campo de explicacion LLM
@@ -49,6 +56,9 @@ _MAX_DESCRIPTION = 300
 _LLM_MAX_TOKENS = 2048
 
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+# LAYA: dataset compartido de veredictos Jev (captura pasiva, fail-safe).
+_LAYA_CASES_PATH = Path(r"C:\Users\Sammi\AI\laya-data\cases_audit.jsonl")
 
 # Criterios de veredicto (en ingles a proposito: misma precision que
 # sec-dashboard; son instrucciones para el modelo, no salida al usuario).
@@ -86,6 +96,10 @@ _ai_config: dict[str, Any] = {
     "llm_base_url": os.environ.get("LOCAL_LLM_BASE_URL", ""),
     "llm_model": os.environ.get("LOCAL_LLM_MODEL", ""),
     "llm_timeout": 120,
+    # cloud | local (local = laya-serve; no requiere api_key de TypeSafe).
+    "backend": "cloud",
+    "laya_base_url": DEFAULT_LAYA_BASE_URL,
+    "laya_model": DEFAULT_LAYA_MODEL,
 }
 
 
@@ -151,6 +165,86 @@ def _prob_false_positive(verdict: str | None, confidence: Any):
     return round(p, 3)
 
 
+def _laya_key() -> str:
+    """LAYA_API_KEY desde el entorno o data/laya_serve.env (nunca en claro)."""
+    k = os.environ.get("LAYA_API_KEY")
+    if k:
+        return k
+    try:
+        for line in _LAYA_ENV.read_text(encoding="utf-8").splitlines():
+            if line.startswith("LAYA_API_KEY="):
+                os.environ["LAYA_API_KEY"] = line.split("=", 1)[1].strip()
+                return os.environ["LAYA_API_KEY"]
+    except OSError:
+        pass
+    return "local"
+
+
+def _local_questions() -> dict:
+    """Plantilla UNICA sin indice para /v1/systemone/batch (patron A3).
+
+    Los criteria van en ORDEN LIVE (true_positive, false_positive, noise):
+    el orden es posicional y no debe cambiarse.
+    """
+    return {
+        "verdict": {
+            "type": "choice",
+            "instructions": "which verdict applies to this security finding?",
+            "criteria": _VERDICT_CRITERIA,
+        },
+        "sev": {
+            "type": "score",
+            "instructions": "how severe is the risk if left unaddressed?",
+            "criteria": _SEVERITY_LEVELS,
+        },
+        "action": {
+            "type": "noul",
+            "instructions": "does this finding require immediate operator action?",
+            "criteria": {"false": "no immediate action needed",
+                         "true": "yes, requires immediate action now"},
+        },
+    }
+
+
+def _post_local(states: list[dict]) -> tuple[int, dict]:
+    """POST /v1/systemone/batch al laya-serve (states[] + plantilla unica)."""
+    url = str(_ai_config["laya_base_url"]).rstrip("/") + "/batch"
+    headers = {"Authorization": f"Bearer {_laya_key()}"}
+    payload = {
+        "model": _ai_config["laya_model"],
+        "states": states,
+        "questions": _local_questions(),
+    }
+    total = max(float(_ai_config["jev_timeout"]), 60 + 5 * len(states))
+    status, body = _http_post_json(url, headers, payload, total)
+    return status, body
+
+
+def _parse_local(results: list, n: int) -> dict[str, dict]:
+    """Parsea results[] del batch local a veredictos por indice."""
+    verdicts: dict[str, dict] = {}
+    for i in range(n):
+        r = results[i] if i < len(results) and isinstance(results[i], dict) else {}
+        a = r.get("answers") or {}
+        cls = a.get("verdict") or {}
+        sev = a.get("sev") or {}
+        act = a.get("action") or {}
+        choice = cls.get("choice")
+        conf = cls.get("answer_confidence")
+        try:
+            immediate = "yes" if float(act.get("noul")) >= 0.5 else "no"
+        except (TypeError, ValueError):
+            immediate = None
+        verdicts[str(i)] = {
+            "verdict": choice,
+            "confidence": conf,
+            "severity_score": sev.get("score"),
+            "immediate_action": immediate,
+            "prob_false_positive": _prob_false_positive(choice, conf),
+        }
+    return verdicts
+
+
 def _threat_state(threats: list[dict]) -> list[dict]:
     """Estado minimo por amenaza (sin Details: data minimization)."""
     state = []
@@ -186,14 +280,171 @@ def _build_questions(n: int) -> dict[str, dict]:
     return questions
 
 
+def _laya_onehot(labels, chosen) -> dict:
+    """One-hot desde el argmax cuando Jev no devuelve probabilidades."""
+    if not labels or chosen is None:
+        return {}
+    return {k: (1.0 if k == chosen else 0.0) for k in labels}
+
+
+def _laya_gold(answers: dict, i: int) -> dict:
+    """Gold con probabilidades COMPLETAS (soft targets) para la amenaza i."""
+    v = answers.get(f"f{i}_verdict") or {}
+    s = answers.get(f"f{i}_sev") or {}
+    a = answers.get(f"f{i}_action") or {}
+
+    probs = v.get("probabilities")
+    if not isinstance(probs, dict) or not probs:
+        probs = _laya_onehot(list(_VERDICT_CRITERIA), v.get("choice"))
+    gold: dict[str, dict] = {f"f{i}_verdict": {"probabilities": probs}}
+
+    probs = s.get("probabilities")
+    if not isinstance(probs, dict) or not probs:
+        score = s.get("score")
+        keys = [str(k) for k in range(len(_SEVERITY_LEVELS))]
+        probs = _laya_onehot(keys, str(score)) if score is not None else {}
+    gold[f"f{i}_sev"] = {"probabilities": probs}
+
+    noul = a.get("noul")
+    try:
+        noul = float(noul)
+    except (TypeError, ValueError):
+        noul = None
+    if noul is not None:
+        probs = {"false": round(1.0 - noul, 6), "true": round(noul, 6)}
+    else:
+        probs = a.get("probabilities")
+        if not isinstance(probs, dict) or not probs:
+            probs = {}
+    gold[f"f{i}_action"] = {"probabilities": probs}
+    return gold
+
+
+_LAYA_VOLATILE = frozenset((
+    "ts", "first_seen", "last_seen", "seen_count", "scan_id", "id",
+    "created_at", "timestamp", "run_id", "audit_id", "event_id",
+))
+
+
+def _laya_content_sig(state, questions, gold) -> str:
+    """Firma de contenido para dedup (estable entre re-escaneos del mismo target).
+
+    Ignora campos volatiles del state y reduce el gold al argmax por pregunta,
+    para que variacion minima de probabilidades no cree casos nuevos.
+    Debe permanecer en sincronia con AI/laya-data/merge_dedup.py.
+    """
+    s = {k: v for k, v in state.items() if k not in _LAYA_VOLATILE} \
+        if isinstance(state, dict) else state
+    g = {}
+    for qid, item in (gold or {}).items():
+        probs = item.get("probabilities") if isinstance(item, dict) else None
+        if isinstance(probs, dict) and probs:
+            g[qid] = max(sorted(probs), key=lambda k: probs[k])
+        else:
+            g[qid] = None
+    q = sorted((questions or {}).items()) if isinstance(questions, dict) else questions
+    payload = {"s": s, "q": q, "g": g}
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _laya_capture(state: list[dict], questions: dict, answers: dict) -> None:
+    """Anexa una linea por amenaza al dataset LAYA. Fail-safe: nunca lanza.
+
+    Dedup por firma de contenido (campos volatiles + argmax del gold),
+    no por hash de linea exacta.
+    """
+    try:
+        lines = []
+        for i, st in enumerate(state):
+            qs = {k: v for k, v in questions.items() if k.startswith(f"f{i}_")}
+            lines.append({"state": st, "questions": qs, "gold": _laya_gold(answers, i)})
+        sigs = set()
+        if _LAYA_CASES_PATH.exists():
+            with open(_LAYA_CASES_PATH, encoding="utf-8") as f:
+                for raw in f:
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        obj = json.loads(raw)
+                        sigs.add(_laya_content_sig(
+                            obj.get("state"), obj.get("questions"), obj.get("gold")))
+                    except Exception:
+                        pass
+        new_lines = []
+        for obj in lines:
+            sig = _laya_content_sig(obj["state"], obj["questions"], obj["gold"])
+            if sig not in sigs:
+                sigs.add(sig)
+                # CRITICO: sin sort_keys. El orden de `criteria` es posicional;
+                # ordenarlo desalinea entrenamiento e inferencia (2026-10-04).
+                new_lines.append(json.dumps(obj, ensure_ascii=False))
+        if not new_lines:
+            return
+        _LAYA_CASES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_LAYA_CASES_PATH, "a", encoding="utf-8") as f:
+            for line in new_lines:
+                f.write(line + "\n")
+    except Exception:
+        pass  # captura pasiva: nunca rompe la auditoria
+
+
+def _local_enrich(threats: list[dict]) -> dict:
+    """Camino local (laya-serve). Nunca lanza. Devuelve status ok/error/skipped."""
+    state = _threat_state(threats)
+    try:
+        status, body = _post_local(state)
+    except Exception as e:  # red caida, timeout, JSON invalido...
+        return {"status": "error", "reason": str(e)[:200]}
+    if status != 200:
+        return {"status": "error", "reason": f"http_{status}"}
+    results = body.get("results")
+    if not isinstance(results, list):
+        return {"status": "error", "reason": "bad_batch_shape"}
+    verdicts = _parse_local(results, len(state))
+    out: dict[str, dict] = {}
+    for i in range(len(state)):
+        v = dict(verdicts.get(str(i), {}))
+        v["type"] = str(state[i].get("title") or "")
+        v["severity"] = str(state[i].get("severity") or "")
+        out[str(i)] = v
+    return {
+        "status": "ok",
+        "backend": "local",
+        "model": body.get("model"),
+        "requested_model": _ai_config["laya_model"],
+        "count": len(state),
+        "truncated": len(threats) > len(state),
+        "verdicts": out,
+    }
+
+
 def jev_enrich(threats: list[dict]) -> dict:
-    """Veredictos Jev para la lista de amenazas. Nunca lanza."""
+    """Veredictos IA para la lista de amenazas. Nunca lanza.
+
+    backend=local (opt-in): usa laya-serve en loopback; si el serve local cae,
+    FAIL-SAFE: se degrada al camino cloud/Jev y la auditoria nunca se rompe.
+    backend=cloud (default): Jev TypeSafe, como antes.
+    """
     if not _ai_config.get("jev_enabled"):
         return {"status": "skipped", "reason": "disabled"}
-    if not _ai_config.get("jev_api_key"):
-        return {"status": "skipped", "reason": "no_api_key"}
     if not threats:
         return {"status": "skipped", "reason": "no_findings"}
+
+    backend = str(_ai_config.get("backend") or "cloud")
+    if backend == "local":
+        local_res = _local_enrich(threats)
+        if local_res.get("status") == "ok":
+            return local_res
+        # FAIL-SAFE: el serve local no esta o fallo -> intentar cloud/Jev igual.
+        fallback_reason = str(local_res.get("reason") or "")[:120]
+    if not _ai_config.get("jev_api_key"):
+        reason = "no_api_key"
+        if backend == "local":
+            reason = f"local_fallback_no_api_key ({fallback_reason})"
+        return {"status": "skipped", "reason": reason}
 
     state = _threat_state(threats)
     payload = {
@@ -211,6 +462,7 @@ def jev_enrich(threats: list[dict]) -> dict:
         return {"status": "error", "reason": f"http_{status}"}
 
     answers = body.get("answers", {})
+    _laya_capture(state, payload["questions"], answers)  # LAYA dataset (fail-safe)
     verdicts: dict[str, dict] = {}
     for i in range(len(state)):
         v = answers.get(f"f{i}_verdict") or {}
@@ -229,6 +481,7 @@ def jev_enrich(threats: list[dict]) -> dict:
         }
     return {
         "status": "ok",
+        "backend": "cloud",
         "model": body.get("model"),
         "requested_model": _ai_config["jev_model"],
         "count": len(state),
@@ -238,9 +491,34 @@ def jev_enrich(threats: list[dict]) -> dict:
     }
 
 
+def test_laya_local() -> dict:
+    """Selftest del serve local (mismo patron que sec-dashboard). Nunca lanza."""
+    try:
+        status, body = _post_local(
+            [{"title": "selftest", "tool": "auditing-selftest"}])
+    except Exception as e:  # serve caido / loopback cerrado
+        return {"ok": False, "error": str(e)[:200]}
+    if status != 200:
+        return {"ok": False, "error": f"http_{status}"}
+    results = body.get("results") or []
+    ans = (results[0].get("answers") if results else {}) or {}
+    return {"ok": True, "model": body.get("model"),
+            "answer": (ans.get("verdict") or {}).get("choice")}
+
+
 def test_jev() -> dict:
-    """Probe minimo para validar key/conexion. Nunca lanza."""
-    if not _ai_config.get("jev_enabled") or not _ai_config.get("jev_api_key"):
+    """Probe minimo para validar key/conexion. Nunca lanza.
+
+    Con backend=local sondea el serve local (sin api_key de TypeSafe);
+    con cloud (default) valida la key contra Jev como antes.
+    """
+    if not _ai_config.get("jev_enabled"):
+        return {"ok": False, "error": "not_configured"}
+    if str(_ai_config.get("backend") or "cloud") == "local":
+        r = test_laya_local()
+        r["backend"] = "local"
+        return r
+    if not _ai_config.get("jev_api_key"):
         return {"ok": False, "error": "not_configured"}
     payload = {
         "model": _ai_config["jev_model"],
