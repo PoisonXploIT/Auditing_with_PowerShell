@@ -582,6 +582,39 @@ setx AUDIT_ADMIN_USER "sammi"
 setx AUDIT_ADMIN_PASSWORD "tu-clave-real"   # min. 8 caracteres
 ```
 
+**Ojo: el bootstrap solo crea, no actualiza.** `bootstrap_admin()` inserta la cuenta
+si no existe ningun administrador. Si `sammi` ya existe, cambiar `AUDIT_ADMIN_PASSWORD`
+con `setx` **no** cambia la contraseña almacenada: el login seguira fallando con la
+clave nueva. Hay que sincronizar la cuenta:
+
+```powershell
+# 1. Definir la variable (afecta a procesos nuevos, no a la sesion actual)
+setx AUDIT_ADMIN_PASSWORD "nueva-clave"
+
+# 2. Cerrar la terminal y abrir otra nueva (para heredar la variable)
+
+# 3. Sincronizar la cuenta con ese valor
+cd C:\Users\Sammi\Auditing_with_PowerShell
+.\ui\.venv\Scripts\python.exe -c "import sys,os; sys.path.insert(0,'ui'); import db,auth; db.init_db(); auth.init_auth(); auth.reset_password(os.environ['AUDIT_ADMIN_USER'], os.environ['AUDIT_ADMIN_PASSWORD'])"
+
+# 4. Reiniciar la consola
+.\ui\.venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8502
+```
+
+Tambien se puede cambiar desde la pestana **Administracion** (`PATCH /api/admin/users/{u}/password`),
+que revoca las sesiones del usuario al hacerlo.
+
+**Si te bloqueas:** tras 5 intentos fallidos la cuenta queda bloqueada 15 minutos. La API
+responde `429 Cuenta bloqueada temporalmente` (distinto del `401 Credenciales invalidas`).
+Desbloquear a mano:
+
+```powershell
+.\ui\.venv\Scripts\python.exe -c "import sys; sys.path.insert(0,'ui'); import db,auth; db.init_db(); auth.init_auth(); auth.reset_password('sammi', 'tu-clave')"
+```
+
+El registro de actividad (`GET /api/admin/trail`) deja constancia de cada intento:
+`login`, `login_failed`, `login_blocked`, `logout`.
+
 ### Panel de administracion
 
 Pestana **Administracion** (solo visible para `admin`):
