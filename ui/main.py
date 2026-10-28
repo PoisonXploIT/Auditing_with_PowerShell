@@ -1092,7 +1092,13 @@ def auth_login(req: LoginRequest, request: Request):
     ip = request.client.host if request.client else ""
     session = auth.login(req.username, req.password, ip)
     if session is None:
-        raise HTTPException(status_code=401, detail="Credenciales invalidas o cuenta bloqueada")
+        user = auth.get_user(req.username)
+        if user and user.get("locked_until"):
+            raise HTTPException(
+                status_code=429,
+                detail="Cuenta bloqueada temporalmente por intentos fallidos. Espera 15 minutos.",
+            )
+        raise HTTPException(status_code=401, detail="Credenciales invalidas")
     response = JSONResponse({"username": session["username"], "role": session["role"], "expires_at": session["expires_at"]})
     response.set_cookie(
         key="audit_session",
