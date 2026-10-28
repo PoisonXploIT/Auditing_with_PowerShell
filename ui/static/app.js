@@ -363,7 +363,7 @@ function dashboardHtml(a) {
   const noiseCard = impact.length
     ? `<div class="card" style="border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);padding:12px">
         <div style="font-size:12px;color:var(--text-faint);text-transform:uppercase;letter-spacing:0.5px">Ruido medido por regla de allowlist</div>
-        <ul class="recs" style="margin-top:8px">${impact.map((i) => `<li><strong>${esc(i.id)}</strong> — suprime ${i.suppressed}; si se elimina reaparecen ${i.reaparece_si_se_elimina}${i.threat_types ? ` <span class="text-muted" style="font-size:12px">(${esc(i.threat_types)})</span>` : ""}</li>`).join("")}</ul>
+        <ul class="recs" style="margin-top:8px">${impact.map((i) => `<li><strong>${esc(i.id)}</strong> — suprime ${i.suppressed}; si se elimina reaparecen ${i.reaparece_si_se_elimina}${i.health && i.health !== "activable" ? ` <span class="text-muted" style="font-size:12px">[${esc(i.health)}]</span>` : ""}${i.threat_types ? ` <span class="text-muted" style="font-size:12px">(${esc(i.threat_types)})</span>` : ""}</li>`).join("")}</ul>
         <div class="text-muted" style="margin-top:6px;font-size:12px">Una regla que suprime 0 es candidata a borrarse; una cuya eliminacion no hace reaparecer nada es redundante.</div>
       </div>`
     : "";

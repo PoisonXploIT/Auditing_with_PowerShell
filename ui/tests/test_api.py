@@ -279,10 +279,10 @@ class EvidenceApiTests(unittest.TestCase):
             "    Motivo: Splunk local [allowlist: splunk-web]\n"
             "\n"
             "IMPACTO DE LA ALLOWLIST (ruido medido, no supuesto)\n\n"
-            "Reglas: 3 | Detecciones suprimidas: 2 | Reglas sin efecto: 1\n"
-            "  - splunk-web: suprime 1; si se elimina reaparecen 0 [tipos: Puerto sospechoso en escucha]\n"
-            "  - node-dev: suprime 1; si se elimina reaparecen 1 [tipos: Puerto sospechoso en escucha]\n"
-            "  - ghost: suprime 0; si se elimina reaparecen 0 [tipos: Puerto sospechoso en escucha]\n"
+            "Reglas: 3 | Detecciones suprimidas: 2 | Reglas sin efecto: 1 | Reglas inerte por construccion: 1\n"
+            "  - splunk-web: suprime 1; si se elimina reaparecen 0 [tipos: Puerto sospechoso en escucha] (activable)\n"
+            "  - node-dev: suprime 1; si se elimina reaparecen 1 [tipos: Puerto sospechoso en escucha] (activable)\n"
+            "  - ghost: suprime 0; si se elimina reaparecen 0 [tipos: Puerto sospechoso en escucha] (inerte: ningun puerto de la regla esta en la lista de deteccion)\n"
             "\n"
             "COBERTURA DE LA AUDITORIA\n\nCobertura: COMPLETA (ninguna comprobacion omitida)\n"
         )
@@ -290,9 +290,19 @@ class EvidenceApiTests(unittest.TestCase):
         tmp.write_text(text, encoding="utf-8", newline="\n")
         impact = main.parse_allowlist_impact(tmp)
         self.assertEqual(len(impact), 3)
-        self.assertEqual(impact[0], {"id": "splunk-web", "suppressed": 1, "reaparece_si_se_elimina": 0, "threat_types": "Puerto sospechoso en escucha"})
+        self.assertEqual(
+            impact[0],
+            {
+                "id": "splunk-web",
+                "suppressed": 1,
+                "reaparece_si_se_elimina": 0,
+                "threat_types": "Puerto sospechoso en escucha",
+                "health": "activable",
+            },
+        )
         self.assertEqual(impact[1]["reaparece_si_se_elimina"], 1)
         self.assertEqual(impact[2]["suppressed"], 0)
+        self.assertIn("inerte", impact[2]["health"], "la salud de la regla se pierde si el parser no la captura")
         # Un resumen sin la seccion no debe romperse ni inventar datos.
         self.assertEqual(main.parse_allowlist_impact(Path("/no/existe.txt")), [])
 

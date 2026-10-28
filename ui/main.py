@@ -894,7 +894,11 @@ def parse_allowlist_impact(path: Path) -> list:
     entries = []
     for line in match.group(1).splitlines():
         line = line.strip()
-        m = re.match(r"^-\s+([A-Za-z0-9_.-]+):\s+suprime\s+(\d+);\s+si se elimina reaparecen\s+(\d+)(?:\s+\[tipos:\s+(.*?)\])?$", line)
+        m = re.match(
+            r"^-\s+([A-Za-z0-9_.-]+):\s+suprime\s+(\d+);\s+si se elimina reaparecen\s+(\d+)"
+            r"(?:\s+\[tipos:\s+(.*?)\])?\s*(?:\((activable|inerte[^)]*|invalida[^)]*)\))?$",
+            line,
+        )
         if m:
             entries.append(
                 {
@@ -902,6 +906,7 @@ def parse_allowlist_impact(path: Path) -> list:
                     "suppressed": int(m.group(2)),
                     "reaparece_si_se_elimina": int(m.group(3)),
                     "threat_types": (m.group(4) or "").strip(),
+                    "health": m.group(5) or "activable",
                 }
             )
     return entries
