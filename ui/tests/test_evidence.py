@@ -27,20 +27,20 @@ class EvidenceTests(unittest.TestCase):
     def test_root_hash_cambia_al_editar_un_fichero(self):
         original = evidence.verify_manifest(FIXTURE)["root_sha256"]
         path = FIXTURE / "03_Procesos" / "procesos.json"
-        before = path.read_text(encoding="utf-8")
+        before = path.read_bytes()
         try:
-            path.write_text(before.replace("splunkd", "backdoor", 1), encoding="utf-8")
+            path.write_bytes(before.replace(b"splunkd", b"backdoor", 1))
             result = evidence.verify_manifest(FIXTURE)
             self.assertFalse(result["ok"])
             self.assertEqual(result["status"], "alterado")
             self.assertEqual(result["mismatches"][0]["path"], "03_Procesos/procesos.json")
             self.assertNotEqual(result["root_recomputed"], original)
         finally:
-            path.write_text(before, encoding="utf-8")
+            path.write_bytes(before)
 
     def test_fichero_no_declado_se_detecta(self):
         extra = FIXTURE / "04_Red" / "injectado.json"
-        extra.write_text("{}", encoding="utf-8")
+        extra.write_bytes(b"{}")
         try:
             result = evidence.verify_manifest(FIXTURE)
             self.assertFalse(result["ok"])

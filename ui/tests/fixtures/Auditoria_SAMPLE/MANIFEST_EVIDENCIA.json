@@ -1,7 +1,7 @@
 ﻿{
     "schema":  "audit-evidence/1",
     "audit_id":  "Auditoria_SAMPLE",
-    "generated_at":  "2026-10-28 15:28:41",
+    "generated_at":  "2026-10-28 15:37:17",
     "host":  "ANALISTA",
     "elevated":  false,
     "file_count":  4,
@@ -12,7 +12,7 @@
                       "path":  "03_Procesos\\procesos.json",
                       "sha256":  "4529311e4c0d0fb54b052ae8708c26a1878c15c762ed50d763e212cf29303dfe",
                       "bytes":  73,
-                      "modified":  "2026-10-28 15:28:17"
+                      "modified":  "2026-10-28 15:37:12"
                   },
                   {
                       "path":  "04_Red\\conexiones.json",
