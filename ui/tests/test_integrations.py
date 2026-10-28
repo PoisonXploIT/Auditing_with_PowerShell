@@ -93,6 +93,41 @@ class IntegrationTests(unittest.TestCase):
         self.assertIsNone(enriched["enrichment"])
         self.assertIn("VIRUSTOTAL_API_KEY", enriched["enrichment_note"])
 
+    def test_splunk_usa_autenticacion_splunk_no_bearer(self):
+        """Splunk HEC rechaza 'Bearer <token>' (401). Solo acepta 'Splunk <token>'."""
+        captured = {}
+
+        class FakeResponse:
+            status = 200
+
+            def read(self):
+                return b'{"text":"Success","code":0}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["url"] = req.full_url
+            captured["auth"] = req.get_header("Authorization")
+            return FakeResponse()
+
+        original = integrations.urllib.request.urlopen
+        integrations.urllib.request.urlopen = fake_urlopen
+        try:
+            os.environ["SPLUNK_HEC_URL"] = "https://127.0.0.1:8088"
+            os.environ["SPLUNK_HEC_TOKEN"] = "token-de-prueba"
+            result = integrations.push_to_splunk({"id": "A", "risk": "BAJO"}, [])
+        finally:
+            integrations.urllib.request.urlopen = original
+            os.environ.pop("SPLUNK_HEC_URL")
+            os.environ.pop("SPLUNK_HEC_TOKEN")
+        self.assertTrue(result["ok"])
+        self.assertEqual(captured["auth"], "Splunk token-de-prueba")
+        self.assertTrue(captured["url"].endswith("/services/collector/event"))
+
 
 if __name__ == "__main__":
     unittest.main()

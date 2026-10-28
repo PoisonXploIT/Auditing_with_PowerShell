@@ -144,11 +144,10 @@ def enrich_ioc(ioc: dict[str, Any], timeout: int = 10) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def splunk_event(audit_meta: dict[str, Any], threats: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
+    event: dict[str, Any] = {
         "time": datetime.now().timestamp(),
         "source": "Invoke-SecurityAudit",
         "sourcetype": "audit:security",
-        "index": os.environ.get("SPLUNK_HEC_INDEX", "security"),
         "event": {
             "audit_id": audit_meta.get("id"),
             "risk": audit_meta.get("risk"),
@@ -168,6 +167,12 @@ def splunk_event(audit_meta: dict[str, Any], threats: list[dict[str, Any]]) -> d
             ],
         },
     }
+    # Si no se indica indice, Splunk usa el asignado a la fuente HEC (en este caso
+    # 'main'). Forzar uno que no existe da 400 "Incorrect index".
+    index = _env("SPLUNK_HEC_INDEX")
+    if index:
+        event["index"] = index
+    return event
 
 
 def push_to_splunk(audit_meta: dict[str, Any], threats: list[dict[str, Any]], timeout: int = 10) -> dict[str, Any]:
@@ -181,7 +186,7 @@ def push_to_splunk(audit_meta: dict[str, Any], threats: list[dict[str, Any]], ti
         req = urllib.request.Request(
             url.rstrip("/") + "/services/collector/event",
             data=payload,
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Splunk {token}", "Content-Type": "application/json"},
         )
         # Splunk local viene con certificado autofirmado: sin esto, la conexion
         # HTTPS falla por verificacion de cadena de confianza.
