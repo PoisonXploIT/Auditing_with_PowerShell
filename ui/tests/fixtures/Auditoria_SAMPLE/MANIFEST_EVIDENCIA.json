@@ -5,8 +5,8 @@
     "host":  "ANALISTA",
     "elevated":  false,
     "file_count":  4,
-    "total_bytes":  1099,
-    "root_sha256":  "0752f71226c82799665768cd21a712074836dfde6c4bac8a9fdb0cfa7e429abe",
+    "total_bytes":  1356,
+    "root_sha256":  "0ab22097327b47c65e7861a95094b9b1765ee5e1d83f9f05966831bf3c08d7c2",
     "files":  [
                   {
                       "path":  "03_Procesos\\procesos.json",
@@ -28,8 +28,8 @@
                   },
                   {
                       "path":  "RESUMEN_EJECUTIVO.txt",
-                      "sha256":  "5a900febc4a007ae11399a740f6c3978b9269fe5ca89d8eb7b40975eef5878b5",
-                      "bytes":  781,
+                      "sha256":  "b4a61c6e90537da9977f0d12ff47c5b31c4d3443a53716c675f947de0c9bfa7f",
+                      "bytes":  1038,
                       "modified":  "2026-10-28 15:39:02"
                   }
               ]

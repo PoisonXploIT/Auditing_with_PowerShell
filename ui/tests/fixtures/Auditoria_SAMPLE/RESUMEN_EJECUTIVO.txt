@@ -12,6 +12,11 @@ Suprimidas: 1 (no cuentan en el nivel de riesgo)
   - [MEDIUM] Puerto sospechoso en escucha | Puerto 9999 en escucha en 0.0.0.0 (proceso 'splunkd') [mitre: T1571]
     Motivo: Splunk Enterprise local: 8088/9999 son Splunk Web y su API, no un C2 [allowlist: splunk-local]
 
+IMPACTO DE LA ALLOWLIST (ruido medido, no supuesto)
+
+Reglas: 1 | Detecciones suprimidas: 1 | Reglas sin efecto: 0 | Reglas inerte por construccion: 0
+  - splunk-local: suprime 1; si se elimina reaparecen 1 [tipos: Puerto sospechoso en escucha] (activable)
+
 COBERTURA DE LA AUDITORIA
 
 Cobertura: PARCIAL (2 comprobaciones omitidas)

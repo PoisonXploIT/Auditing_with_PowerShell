@@ -469,6 +469,11 @@ Tres condiciones de validez, verificadas por el propio script:
    `ThreatTypes` listados y, si se declara `excludePattern`, no suprime los casos que
    coincidan con ese patrón.
 
+La validación no solo se informa: `POST /api/allowlist` **rechaza** (400) la regla
+inerte o inválida antes de guardarla, con la misma lógica que `Get-AllowlistRuleHealth`
+(`db.allowlist_rule_health`). Una regla que se acepta pero nunca dispara da falsa
+sensacion de cobertura, y eso se nota en el conteo de ruido.
+
 ```json
 {
   "entries": [
@@ -524,7 +529,7 @@ medido por regla de allowlist".
 
 ### Selftest de detección (`-SelfTest`)
 
-117 casos de regex, LOLBAS, direcciones privadas, MITRE, allowlist, deduplicación,
+126 casos de regex, LOLBAS, direcciones privadas, MITRE, allowlist, deduplicación,
 firmas. No audita nada y devuelve 1 si algún caso falla (útil en CI):
 
 ```powershell
@@ -602,11 +607,11 @@ vencidos con los dias de retraso. El KPI "SLA vencido" va en la cabecera.
 
 `.github/workflows/ci.yml` (runner Windows, dos jobs):
 
-1. **Selftest de deteccion**: `Invoke-SecurityAudit.ps1 -SelfTest` (117 casos) y otra
+1. **Selftest de deteccion**: `Invoke-SecurityAudit.ps1 -SelfTest` (126 casos) y otra
    pasada con `-AllowlistPath` para validar que las reglas derivadas del triage matchean
    por si solas (un caso extra por regla externa). El script sale con codigo 1 si algun
    caso falla, lo que rompe el build.
-2. **Tests de baseline, API, auth e integraciones**: `python -m unittest discover -s ui/tests` (99 casos).
+2. **Tests de baseline, API, auth e integraciones**: `python -m unittest discover -s ui/tests` (101 casos).
 
 ### Autenticacion y sesiones
 

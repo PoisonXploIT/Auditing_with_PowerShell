@@ -673,10 +673,38 @@ def derive_allowlist_entry(signature: str, reason: str = "") -> Optional[dict[st
     }
 
 
+SUSPICIOUS_PORTS = {4444, 5555, 6666, 7777, 8080, 8888, 9999, 31337, 12345, 1337, 6667}
+
+
+def allowlist_rule_health(process: str, ports: list[int]) -> dict[str, Any]:
+    """Espejo de Get-AllowlistRuleHealth en Invoke-SecurityAudit.ps1.
+
+    Una regla solo vale si puede disparar: si ninguno de sus puertos esta en la lista
+    de deteccion, la alarma nunca existe y la regla no suprime nada. No es inocua: da
+    una falsa sensacion de cobertura y ensucia el conteo de ruido.
+    """
+    detectable = sorted({int(p) for p in ports if int(p) in SUSPICIOUS_PORTS})
+    if not process and not ports:
+        return {"estado": "invalida: sin proceso ni puertos", "puertos_detectables": []}
+    if ports and not detectable:
+        return {
+            "estado": "inerte: ningun puerto de la regla esta en la lista de deteccion",
+            "puertos_detectables": [],
+        }
+    return {"estado": "activable", "puertos_detectables": detectable}
+
+
 def add_allowlist_entry(entry: dict[str, Any]) -> dict[str, Any]:
     ports = sorted({int(p) for p in (entry.get("ports") or []) if int(p) > 0})
     if not entry.get("process") and not ports:
         raise ValueError("La entrada de allowlist necesita un proceso o un puerto")
+    health = allowlist_rule_health(entry.get("process", ""), ports)
+    if health["estado"] != "activable":
+        raise ValueError(
+            f"Regla de allowlist {health['estado']}. Una regla que no puede disparar "
+            "no suprime nada: da falsa sensacion de cobertura. Usa un puerto alertado "
+            f"({', '.join(str(p) for p in sorted(SUSPICIOUS_PORTS))}) o un proceso."
+        )
     entry_id = entry.get("id") or f"manual-{uuid.uuid4().hex[:8]}"
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with _LOCK, connect() as conn:
@@ -720,6 +748,7 @@ def list_allowlist(active_only: bool = True) -> list[dict[str, Any]]:
             d["ports"] = json.loads(d.get("ports") or "[]")
         except (json.JSONDecodeError, TypeError):
             d["ports"] = []
+        d["health"] = allowlist_rule_health(d.get("process", ""), d["ports"])
         out.append(d)
     return out
 

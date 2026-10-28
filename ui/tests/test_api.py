@@ -165,10 +165,16 @@ class ApiTests(unittest.TestCase):
     def test_allowlist_crud(self):
         r = client.post(
             "/api/allowlist",
-            json={"threat_type": "Puerto sospechoso en escucha", "process": "myapp", "ports": [5000], "reason": "servicio interno"},
+            json={"threat_type": "Puerto sospechoso en escucha", "process": "myapp", "ports": [8080], "reason": "servicio interno"},
         )
         self.assertEqual(r.status_code, 200)
         entry_id = r.json()["id"]
+        # Un puerto que el detector no alertan no genera nunca la alarma: la regla
+        # seria inerte y se rechaza en lugar de aceptarse.
+        self.assertEqual(
+            client.post("/api/allowlist", json={"threat_type": "X", "ports": [5000]}).status_code,
+            400,
+        )
         self.assertEqual(client.delete(f"/api/allowlist/{entry_id}").status_code, 200)
         self.assertEqual(client.delete(f"/api/allowlist/{entry_id}").status_code, 404)
 

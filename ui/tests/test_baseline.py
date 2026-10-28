@@ -195,6 +195,25 @@ class BaselineTests(unittest.TestCase):
         db.add_allowlist_entry({"threat_type": "X", "process": "node", "reason": "dev local"})
         self.assertEqual(len(db.list_allowlist()), 1)
 
+    def test_inert_rule_is_rejected(self):
+        # Un puerto que el detector no alertan no genera nunca la alarma: la regla
+        # no puede disparar y solo da falsa sensacion de cobertura.
+        with self.assertRaises(ValueError) as exc:
+            db.add_allowlist_entry({"threat_type": "X", "ports": [5432], "reason": "postgres"})
+        self.assertIn("inerte", str(exc.exception).lower())
+        self.assertEqual(len(db.list_allowlist()), 0)
+        # La misma regla sin el puerto inerte si es activable: el proceso es el ancla.
+        db.add_allowlist_entry({"threat_type": "X", "process": "postgres"})
+        self.assertEqual(len(db.list_allowlist()), 1)
+
+    def test_rule_health_reported(self):
+        db.add_allowlist_entry({"threat_type": "X", "process": "node", "ports": [8080]})
+        entry = db.list_allowlist()[0]
+        self.assertEqual(entry["health"]["estado"], "activable")
+        self.assertEqual(entry["health"]["puertos_detectables"], [8080])
+        db.add_allowlist_entry({"threat_type": "Y", "process": "bash"})
+        self.assertEqual(db.list_allowlist()[-1]["health"]["estado"], "activable")
+
     def test_sla_computed_on_ingest(self):
         db.ingest_audit(self.audit)
         sig = THREATS[0]["Signature"]
