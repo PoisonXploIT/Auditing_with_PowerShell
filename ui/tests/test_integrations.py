@@ -3,6 +3,7 @@
 Ejecutar:  python -m unittest ui.tests.test_integrations -v
 """
 
+import json
 import os
 import sys
 import unittest
@@ -143,6 +144,97 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(event["event"]["overdue_count"], 1)
         self.assertEqual(event["event"]["by_severity"], {"HIGH": 1})
         self.assertEqual(event["event"]["details"][0]["days_overdue"], 12)
+
+    def test_evento_sla_con_forma_real_de_db_sla_report(self):
+        """db.sla_report() devuelve 'overdue' como contador y 'overdue_list' como detalle.
+
+        Si el evento se construyera sobre el contador, el detalle se perderia y Splunk
+        recibiria una alerta sin los hallazgos que la motivan.
+        """
+        report = {
+            "policy": {"CRITICAL": 1, "HIGH": 3, "MEDIUM": 7, "LOW": 30},
+            "open": 4,
+            "overdue": 2,
+            "overdue_list": [
+                {"signature": "AAA", "type": "Run Key sospechoso", "severity": "HIGH",
+                 "first_seen": "2026-01-01 00:00:00", "due_at": "2026-01-04 00:00:00",
+                 "days_overdue": 12, "occurrences": 3},
+                {"signature": "BBB", "type": "Puerto sospechoso", "severity": "MEDIUM",
+                 "first_seen": "2026-02-01 00:00:00", "due_at": "2026-02-10 00:00:00",
+                 "days_overdue": 4, "occurrences": 1},
+            ],
+            "by_severity": {
+                "HIGH": {"open": 2, "overdue": 1, "sla_days": 3, "oldest": "2026-01-01 00:00:00"},
+                "MEDIUM": {"open": 2, "overdue": 1, "sla_days": 7, "oldest": "2026-02-01 00:00:00"},
+            },
+        }
+        event = integrations.sla_alert_event(report)
+        self.assertEqual(event["event"]["overdue_count"], 2)
+        self.assertEqual(event["event"]["by_severity"], {"HIGH": 1, "MEDIUM": 1})
+        self.assertEqual({d["signature"] for d in event["event"]["details"]}, {"AAA", "BBB"})
+        self.assertTrue(all(d["due_at"] and d["days_overdue"] >= 0 for d in event["event"]["details"]))
+
+    def test_alerta_sla_end_to_end_con_servidor_hec_real(self):
+        """Prueba de extremo a extremo contra un HEC local: la peticion que sale es
+        la que Splunk espera (ruta, cabecera de autenticacion, payload parseable).
+        """
+        import http.server
+        import threading
+        from urllib.request import Request
+        from urllib.error import URLError  # noqa: F401 (usado por el manejo de errores)
+
+        captured = {}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self, *args):  # pragma: no cover - stub
+                length = int(self.headers.get("Content-Length", 0))
+                captured["path"] = self.path
+                captured["auth"] = self.headers.get("Authorization")
+                captured["content_type"] = self.headers.get("Content-Type")
+                captured["body"] = self.rfile.read(length).decode("utf-8")
+                payload = b'{"text":"Success","code":0}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, format, *args):  # silenciar el servidor de prueba
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        port = server.server_port
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            os.environ["SPLUNK_HEC_URL"] = f"http://127.0.0.1:{port}"
+            os.environ["SPLUNK_HEC_TOKEN"] = "token-de-prueba"
+            report = {
+                "overdue": 1,
+                "overdue_list": [
+                    {"signature": "AAA", "type": "Run Key sospechoso", "severity": "HIGH",
+                     "due_at": "2026-01-04 00:00:00", "days_overdue": 12}
+                ],
+                "by_severity": {"HIGH": {"open": 1, "overdue": 1, "sla_days": 3}},
+            }
+            result = integrations.push_sla_alert(report)
+        finally:
+            server.shutdown()
+            server.server_close()
+            os.environ.pop("SPLUNK_HEC_URL", None)
+            os.environ.pop("SPLUNK_HEC_TOKEN", None)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], 200)
+        self.assertEqual(captured["path"], "/services/collector/event")
+        self.assertEqual(captured["auth"], "Splunk token-de-prueba")
+        self.assertEqual(captured["content_type"], "application/json")
+        sent = json.loads(captured["body"])
+        self.assertEqual(sent["sourcetype"], "audit:sla")
+        self.assertEqual(sent["source"], "Invoke-SecurityAudit")
+        self.assertEqual(sent["event"]["alert"], "sla_overdue")
+        self.assertEqual(sent["event"]["overdue_count"], 1)
+        self.assertIn("time", sent)
 
     def test_splunk_usa_autenticacion_splunk_no_bearer(self):
         """Splunk HEC rechaza 'Bearer <token>' (401). Solo acepta 'Splunk <token>'."""
