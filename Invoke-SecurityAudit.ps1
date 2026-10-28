@@ -537,6 +537,8 @@ function Add-ThreatDetection {
     }
     [void]$Global:ThreatKeys.Add($key)
     
+    $mitre = $Global:MitreMap[$ThreatType]
+
     # Allowlist: la supresion se registra, no se silencia. Queda en el resumen y en el log.
     $allowed = Test-AllowedByAllowlist -ThreatType $ThreatType -Description $Description -Details $Details
     if ($allowed) {
@@ -546,12 +548,11 @@ function Add-ThreatDetection {
             Description    = $Description
             AllowlistId    = $allowed.Id
             Reason         = $allowed.Reason
+            MitreTechnique = if ($mitre) { $mitre.Id } else { "" }
         }
         Write-AuditLog "  [ALLOWLIST] Suprimida '$ThreatType' por $($allowed.Id): $($allowed.Reason)" -Level INFO
         return
     }
-    
-    $mitre = $Global:MitreMap[$ThreatType]
     
     $threat = [PSCustomObject]@{
         Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -1756,7 +1757,8 @@ function New-ExecutiveSummary {
             "" | Out-File $summaryPath -Append -Encoding UTF8
             "Suprimidas: $($Global:SuppressedThreats.Count) (no cuentan en el nivel de riesgo)" | Out-File $summaryPath -Append -Encoding UTF8
             foreach ($sup in $Global:SuppressedThreats) {
-                "  - [$($sup.Severity)] $($sup.ThreatType) | $($sup.Description)" | Out-File $summaryPath -Append -Encoding UTF8
+                $tech = if ($sup.MitreTechnique) { " [mitre: " + $sup.MitreTechnique + "]" } else { "" }
+                "  - [$($sup.Severity)] $($sup.ThreatType) | $($sup.Description)$tech" | Out-File $summaryPath -Append -Encoding UTF8
                 "    Motivo: $($sup.Reason) [allowlist: $($sup.AllowlistId)]" | Out-File $summaryPath -Append -Encoding UTF8
             }
             "" | Out-File $summaryPath -Append -Encoding UTF8

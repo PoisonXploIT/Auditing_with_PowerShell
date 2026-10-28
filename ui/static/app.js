@@ -53,6 +53,11 @@ async function api(path, opts = {}) {
     headers: { "Content-Type": "application/json" },
     ...opts,
   });
+  if (res.status === 401) {
+    // La sesion caduco por inactividad: mostrar el acceso y no dejar la UI a medias.
+    if (typeof showLogin === "function") showLogin("La sesion ha caducado. Vuelve a iniciar sesion.");
+    throw new Error("No hay sesion activa");
+  }
   if (!res.ok) {
     let msg = res.statusText;
     try {
@@ -215,7 +220,7 @@ function renderTable(data) {
 // La URL refleja la pestaña y la auditoria abierta: #/dashboard, #/audits,
 // #/run y #/audit/<id>. Sin esto, compartir o recargar una pestaña concreta
 // siempre devolvía al Panel General.
-const VIEWS = ["dashboard", "audits", "run", "baseline"];
+const VIEWS = ["dashboard", "audits", "run", "baseline", "integrations", "admin"];
 
 function parseHash() {
   const raw = (location.hash || "").replace(/^#\/?/, "");
@@ -242,13 +247,22 @@ function setActiveView(view, auditId) {
   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
   document.getElementById("view-" + view).classList.add("active");
 
-  const titles = { dashboard: "Panel General", audits: "Auditorias", run: "Nueva Auditoria", baseline: "Baseline" };
+  const titles = {
+    dashboard: "Panel General",
+    audits: "Auditorias",
+    run: "Nueva Auditoria",
+    baseline: "Baseline",
+    integrations: "Integraciones",
+    admin: "Administracion",
+  };
   document.getElementById("topbar-title").textContent = titles[view] || "Security Audit";
 
   if (view === "dashboard") renderDashboard();
   if (view === "audits") renderAudits();
   if (view === "run") renderRun();
   if (view === "baseline") renderBaseline();
+  if (view === "integrations") renderIntegrations();
+  if (view === "admin") renderAdmin();
 }
 
 async function renderDashboard() {
@@ -1040,6 +1054,7 @@ function bindNav() {
 
 async function init() {
   bindNav();
+  if (!(await checkAuth())) return;   // sin sesion no tiene sentido cargar nada
   api("/api/config")
     .then((c) => (document.getElementById("sidebar-version").textContent = "v" + c.version))
     .catch(() => {});

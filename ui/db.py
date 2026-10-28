@@ -208,7 +208,11 @@ def _load_suppressed(folder: Path) -> list[dict[str, Any]]:
         if line.startswith("- "):
             m = re.match(r"^- \[([A-Z]+)\] (.*?) \| (.*)$", line)
             if m:
-                current = {"severity": m.group(1), "type": m.group(2), "description": m.group(3)}
+                desc = m.group(3)
+                mitre = re.search(r"\[mitre: ([A-Za-z0-9.]+)\]", desc)
+                if mitre:
+                    desc = desc[: mitre.start()].strip()
+                current = {"severity": m.group(1), "type": m.group(2), "description": desc, "mitre": mitre.group(1) if mitre else ""}
                 # El resumen no trae los detalles estructurados de una supresion, pero
                 # la descripcion contiene el proceso y el puerto: sin eso, marcar un FP
                 # no puede traducirse en una regla.
@@ -344,8 +348,8 @@ def ingest_audit(folder: Path, force: bool = False) -> dict[str, int]:
                 conn.execute(
                     """INSERT INTO threats (signature, type, severity, description,
                                            first_seen, last_seen, occurrences, status, note, details,
-                                           sla_days, due_at)
-                       VALUES (?, ?, ?, ?, ?, ?, 1, 'false_positive', ?, ?, ?, ?)""",
+                                           sla_days, due_at, mitre_technique)
+                       VALUES (?, ?, ?, ?, ?, ?, 1, 'false_positive', ?, ?, ?, ?, ?)""",
                     (
                         sig,
                         sup["type"],
@@ -357,6 +361,7 @@ def ingest_audit(folder: Path, force: bool = False) -> dict[str, int]:
                         json.dumps(sup.get("details") or {}, ensure_ascii=False),
                         SLA_DAYS.get(sup["severity"], 7),
                         _sla_due(seen_at, sup["severity"]),
+                        sup.get("mitre", ""),
                     ),
                 )
             else:

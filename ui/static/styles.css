@@ -496,3 +496,27 @@ td.num { font-variant-numeric: tabular-nums; }
 .input:focus { outline: none; border-color: var(--border-strong); }
 .input::placeholder { color: var(--text-faint); }
 .input.mono { font-family: var(--mono); font-size: 12.5px; }
+
+/* Login */
+.login-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  z-index: 50;
+}
+.login-overlay[hidden] { display: none; }
+.login-card {
+  width: min(420px, 92vw);
+  padding: 26px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.login-card h1 { font-size: 20px; margin: 0 0 6px; }
+.login-card p { margin: 0 0 16px; font-size: 13px; }
+.field { display: block; margin-bottom: 12px; }
+.field span { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
+.login-hint { margin-top: 12px; font-size: 12px; color: var(--critical); min-height: 16px; }

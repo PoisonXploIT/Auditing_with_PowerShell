@@ -15,10 +15,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import db  # noqa: E402
+import auth  # noqa: E402
 
 # Aislar la base antes de importar la app: si no, los tests indexan el historial real.
 db.DB_PATH = Path(tempfile.mkdtemp()) / "api_test.db"
 db.init_db()  # TestClient no dispara el evento de arranque de la app
+auth.init_auth()
 
 from fastapi.testclient import TestClient  # noqa: E402
 import main  # noqa: E402
@@ -26,6 +28,14 @@ import main  # noqa: E402
 client = TestClient(main.app)
 
 SIG = db.signature("Run Key sospechoso", "Run key 'Z' apunta a un script")
+
+
+def _login(username="admin-test", password="clave-de-test", role="admin"):
+    try:
+        auth.create_user(username, password, role)
+    except ValueError:
+        pass  # ya existe de un test anterior
+    return client.post("/api/auth/login", json={"username": username, "password": password})
 
 
 def _seed_threat():
@@ -43,6 +53,33 @@ def _seed_threat():
 
 
 class ApiTests(unittest.TestCase):
+    def setUp(self):
+        # Cada test empieza con una sesion valida: la API ya no es publica.
+        client.cookies.clear()
+        _login()
+
+    def test_sin_sesion_la_api_responde_401(self):
+        fresh = TestClient(main.app)
+        self.assertEqual(fresh.get("/api/audits").status_code, 401)
+        self.assertEqual(fresh.get("/api/health").status_code, 200)
+
+    def test_login_y_me(self):
+        r = client.get("/api/auth/me")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["username"], "admin-test")
+        self.assertEqual(r.json()["role"], "admin")
+
+    def test_viewer_no_puede_mutar(self):
+        client.cookies.clear()
+        _login("observador", "clave-de-test", "viewer")
+        self.assertEqual(client.get("/api/audits").status_code, 200)
+        self.assertEqual(client.post("/api/allowlist", json={"process": "x", "reason": "y"}).status_code, 403)
+
+    def test_admin_no_privado_no_puede_listar_usuarios(self):
+        client.cookies.clear()
+        _login("analista", "clave-de-test", "analyst")
+        self.assertEqual(client.get("/api/admin/users").status_code, 403)
+
     def test_config_y_baseline(self):
         r = client.get("/api/config")
         self.assertEqual(r.status_code, 200)

@@ -39,12 +39,22 @@
           <svg viewBox="0 0 24 24"><path d="M3 21h18M3 12l4 4 5-7 4 4 5-6"/></svg>
           <span>Baseline</span>
         </button>
+        <button class="nav-item" data-view="integrations">
+          <svg viewBox="0 0 24 24"><path d="M4 4h6v6H4zM14 14h6v6h-6zM10 7h4M7 10v4"/></svg>
+          <span>Integraciones</span>
+        </button>
+        <button class="nav-item" data-view="admin" id="nav-admin" hidden>
+          <svg viewBox="0 0 24 24"><path d="M12 3l7 4v5c0 4-3 6-7 7-4-1-7-3-7-7V7l7-4z"/></svg>
+          <span>Administracion</span>
+        </button>
       </nav>
 
       <div class="sidebar-foot">
         <div class="version" id="sidebar-version">v3.0</div>
+        <div class="version" id="sidebar-user">sin sesion</div>
         <div class="sidebar-note">Script PowerShell<br />Invoke-SecurityAudit.ps1</div>
         <div class="sidebar-note">Proteccion CSRF activa<br />Verificacion de origen en mutaciones</div>
+        <div class="sidebar-note">Sesion por cookie<br />Caduca por inactividad</div>
       </div>
     </aside>
 
@@ -71,13 +81,35 @@
 
         <!-- Baseline -->
         <div class="view" id="view-baseline"></div>
+
+        <!-- Integraciones -->
+        <div class="view" id="view-integrations"></div>
+
+        <!-- Administracion -->
+        <div class="view" id="view-admin"></div>
       </section>
     </main>
+  </div>
+
+  <!-- Login: la API responde 401 sin sesion, esta capa lo resuelve -->
+  <div class="login-overlay" id="login-overlay" hidden>
+    <div class="login-card">
+      <h1>Consola de Auditoria</h1>
+      <p class="text-muted">Sesion de 30 minutos que se renueva con actividad. Sin actividad, la sesion caduca.</p>
+      <label class="field"><span>Usuario</span>
+        <input class="input mono" id="login-user" autocomplete="username" /></label>
+      <label class="field"><span>Contraseña</span>
+        <input class="input mono" id="login-pass" type="password" autocomplete="current-password" /></label>
+      <button class="btn btn-primary" id="btn-login">Entrar</button>
+      <div class="login-hint" id="login-error"></div>
+    </div>
   </div>
 
   <div class="toast" id="toast"></div>
 
   <script src="app.js"></script>
   <script src="baseline.js"></script>
+  <script src="auth.js"></script>
+  <script src="integrations.js"></script>
 </body>
 </html>

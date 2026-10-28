@@ -561,8 +561,62 @@ vencidos con los dias de retraso. El KPI "SLA vencido" va en la cabecera.
    pasada con `-AllowlistPath` para validar que las reglas derivadas del triage matchean
    por si solas (103 casos). El script sale con codigo 1 si algun caso falla, lo que
    rompe el build.
-2. **Tests de baseline y API**: `python -m unittest discover -s ui/tests` (35 casos:
-   baseline, triage/allowlist, SLA, endpoints, puerta CSRF).
+2. **Tests de baseline, API, auth e integraciones**: `python -m unittest discover -s ui/tests` (56 casos).
+
+### Autenticacion y sesiones
+
+La consola ya no es publica: toda la API responde `401` sin sesion.
+
+- Hash de contraseña con **scrypt** (salt aleatorio, `n=16384`).
+- Sesion en cookie `audit_session`, `HttpOnly` y `SameSite=Lax`.
+- **Caducidad por inactividad**: 30 minutos. Cada peticion renueva la ventana; si nadie
+  la usa, la sesion se revoca y la cookie deja de valer. No es un plazo absoluto.
+- Bloqueo de cuenta tras 5 intentos fallidos (15 minutos).
+- Roles: `admin` (todo), `analyst` (ejecutar y triar), `viewer` (solo lectura, las
+  mutaciones responden `403`).
+
+El usuario administrador se crea **desde variables de entorno**, nunca desde un fichero:
+
+```powershell
+setx AUDIT_ADMIN_USER "sammi"
+setx AUDIT_ADMIN_PASSWORD "tu-clave-real"   # min. 8 caracteres
+```
+
+### Panel de administracion
+
+Pestana **Administracion** (solo visible para `admin`):
+
+| Endpoint | Que hace |
+|---|---|
+| `GET /api/admin/users` | Lista usuarios, ultimo acceso, intentos fallidos, estado |
+| `POST /api/admin/users` | Crear usuario con rol |
+| `DELETE /api/admin/users/{u}` | Borrar usuario y revocar sus sesiones |
+| `PATCH /api/admin/users/{u}/password` | Reset de contraseña (revoca sesiones) |
+| `GET /api/admin/sessions` | Sesiones activas con ultima actividad, caducidad e IP |
+| `DELETE /api/admin/sessions/{token}` | Expulsar una sesion a mano |
+| `GET /api/admin/trail` | Registro de actividad: quien, que, cuando, desde que IP |
+
+Cada ejecucion de auditoria, cancelacion y triage queda registrado en la tabla
+`audit_trail`.
+
+### Integraciones
+
+Pestana **Integraciones**. Las credenciales se leen del entorno; en la interfaz solo se
+muestra si estan definidas, nunca el valor.
+
+| Integracion | Variables | Que hace |
+|---|---|---|
+| Splunk HEC | `SPLUNK_HEC_URL`, `SPLUNK_HEC_TOKEN`, `SPLUNK_HEC_INDEX` | `POST /api/audits/{id}/splunk` envia el resumen y los hallazgos como evento `audit:security` |
+| VirusTotal | `VIRUSTOTAL_API_KEY` | `GET /api/audits/{id}/iocs?enrich=true` enriquece IPs y hashes |
+| MITRE Navigator | — | `GET /api/audits/{id}/navigator` descarga una capa 2.1 con las tecnicas observadas, puntuadas por ocurrencias |
+
+IOCs: `GET /api/audits/{id}/iocs` extrae IP, puertos, procesos y rutas de los hallazgos.
+Las amenazas **suprimidas por la allowlist tambien aportan indicadores**: un puerto en
+escucha sigue siendo un puerto en escucha aunque sea legitimo. Para que la capa del
+Navigator no quede vacia, el informe ahora anota `[mitre: T1571]` en cada supresion.
+
+Todo es fail-safe: si falta la configuracion, la integracion informa del motivo y no
+interrumpe nada.
 
 ### El triage alimenta la allowlist
 

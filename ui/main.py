@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -28,6 +28,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from fpdf import FPDF
 
 import db
+import auth
+import integrations
 
 # ---------------------------------------------------------------------------
 # Rutas base
@@ -227,6 +229,8 @@ app = FastAPI(title="Auditoria de Seguridad Empresarial", version="3.0")
 def _startup_baseline() -> None:
     """Indexar las auditorias existentes al arrancar (idempotente por id)."""
     db.init_db()
+    auth.init_auth()
+    auth.bootstrap_admin()
     for folder in _audit_folders():
         try:
             db.ingest_audit(folder)
@@ -256,7 +260,7 @@ def list_audits():
 
 
 @app.post("/api/audits/cleanup")
-def cleanup_audits():
+def cleanup_audits(request: Request):
     """Elimina todas las carpetas Auditoria_* y los estados viejos de .runs."""
     # No limpiar mientras haya auditorias en curso (borraria la carpeta activa).
     # Un estado "running" solo cuenta si se escribio recientemente; un archivo viejo
@@ -448,7 +452,7 @@ class StatusRequest(BaseModel):
 
 
 @app.patch("/api/threats/{signature}/status")
-def set_threat_status(signature: str, req: StatusRequest):
+def set_threat_status(signature: str, req: StatusRequest, request: Request):
     """Triage de un hallazgo: open, investigating, accepted, false_positive, resolved."""
     try:
         updated = db.set_status(signature, req.status.lower(), req.note)
@@ -456,6 +460,12 @@ def set_threat_status(signature: str, req: StatusRequest):
         raise HTTPException(status_code=400, detail=str(exc))
     if updated is None:
         raise HTTPException(status_code=404, detail="Hallazgo no encontrado en la baseline")
+    auth.record_event(
+        getattr(request.state, "user", {}).get("username"),
+        "triage",
+        f"{signature} -> {req.status.lower()}",
+        request.client.host if request.client else "",
+    )
     return {"threat": updated, "allowlist_entry": updated.get("allowlist_entry")}
 
 
@@ -754,7 +764,16 @@ def parse_suppressed(path: Path) -> list:
         if line.startswith("- "):
             m = re.match(r"^- \[([A-Z]+)\] (.*?) \| (.*)$", line)
             if m:
-                current = {"severity": m.group(1), "type": m.group(2), "description": m.group(3)}
+                desc = m.group(3)
+                mitre = re.search(r"\[mitre: ([A-Za-z0-9.]+)\]", desc)
+                if mitre:
+                    desc = desc[: mitre.start()].strip()
+                current = {
+                    "severity": m.group(1),
+                    "type": m.group(2),
+                    "description": desc,
+                    "MitreTechnique": mitre.group(1) if mitre else "",
+                }
                 items.append(current)
         elif line.startswith("Motivo:") and current is not None:
             m = re.match(r"^Motivo: (.*?) \[allowlist: (.*)\]$", line)
@@ -847,9 +866,15 @@ def _encode_ps_command(script: str) -> str:
 
 
 @app.post("/api/audits/run")
-def run_audit(req: RunRequest):
+def run_audit(req: RunRequest, request: Request):
     run_id = uuid.uuid4().hex[:12]
     status_file = _status_file(run_id)
+    auth.record_event(
+        getattr(request.state, "user", {}).get("username"),
+        "audit_run",
+        f"run_id={run_id} elevated={req.elevated}",
+        request.client.host if request.client else "",
+    )
 
     # La allowlist generada por el triage se pasa al script: sin esto, marcar un FP
     # en la UI no cambia nada en la siguiente ejecucion.
@@ -944,7 +969,13 @@ def list_runs():
 
 
 @app.post("/api/runs/{run_id}/cancel")
-def cancel_run(run_id: str):
+def cancel_run(run_id: str, request: Request):
+    auth.record_event(
+        getattr(request.state, "user", {}).get("username"),
+        "audit_cancel",
+        f"run_id={run_id}",
+        request.client.host if request.client else "",
+    )
     with RUNS_LOCK:
         meta = RUNS.get(run_id)
     if meta is None:
@@ -1042,6 +1073,179 @@ def get_ai_enrich(audit_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Autenticacion y panel de administrador
+# ---------------------------------------------------------------------------
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@app.get("/api/health")
+def health():
+    return {"status": "ok", "version": "3.0"}
+
+
+@app.post("/api/auth/login")
+def auth_login(req: LoginRequest, request: Request):
+    ip = request.client.host if request.client else ""
+    session = auth.login(req.username, req.password, ip)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Credenciales invalidas o cuenta bloqueada")
+    response = JSONResponse({"username": session["username"], "role": session["role"], "expires_at": session["expires_at"]})
+    response.set_cookie(
+        key="audit_session",
+        value=session["token"],
+        httponly=True,
+        samesite="lax",
+        max_age=auth.SESSION_TTL_MINUTES * 60,
+        path="/",
+    )
+    return response
+
+
+@app.post("/api/auth/logout")
+def auth_logout(request: Request):
+    token = request.cookies.get("audit_session", "")
+    user = request.state.user if hasattr(request.state, "user") else None
+    auth.revoke_session(token)
+    auth.record_event(user.get("username") if user else None, "logout", "")
+    response = JSONResponse({"logged_out": True})
+    response.delete_cookie("audit_session")
+    return response
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request):
+    return request.state.user
+
+
+def _require_admin(request: Request) -> dict[str, Any]:
+    user = getattr(request.state, "user", None)
+    if not user or user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Se requiere rol admin")
+    return user
+
+
+class UserRequest(BaseModel):
+    username: str
+    password: str
+    role: str = "analyst"
+
+
+@app.get("/api/admin/users")
+def admin_users(request: Request):
+    _require_admin(request)
+    return {"users": auth.list_users(), "session_ttl_minutes": auth.SESSION_TTL_MINUTES}
+
+
+@app.post("/api/admin/users")
+def admin_create_user(req: UserRequest, request: Request):
+    _require_admin(request)
+    try:
+        return auth.create_user(req.username, req.password, req.role)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/api/admin/users/{username}")
+def admin_delete_user(username: str, request: Request):
+    admin = _require_admin(request)
+    if username.lower() == admin["username"]:
+        raise HTTPException(status_code=400, detail="No puedes borrar tu propio usuario")
+    if not auth.delete_user(username):
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    return {"deleted": username}
+
+
+@app.patch("/api/admin/users/{username}/password")
+def admin_reset_password(username: str, req: UserRequest, request: Request):
+    _require_admin(request)
+    try:
+        if not auth.reset_password(username, req.password):
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"reset": username}
+
+
+@app.get("/api/admin/sessions")
+def admin_sessions(request: Request, all_sessions: bool = False):
+    _require_admin(request)
+    return {"sessions": auth.list_sessions(active_only=not all_sessions)}
+
+
+@app.delete("/api/admin/sessions/{token}")
+def admin_revoke_session(token: str, request: Request):
+    _require_admin(request)
+    if not auth.revoke_session(token):
+        raise HTTPException(status_code=404, detail="Sesion no encontrada")
+    auth.record_event(getattr(request.state, "user", {}).get("username"), "session_revoked", token[:8])
+    return {"revoked": True}
+
+
+@app.get("/api/admin/trail")
+def admin_trail(request: Request, limit: int = 100):
+    _require_admin(request)
+    return {"trail": auth.trail(limit)}
+
+
+# ---------------------------------------------------------------------------
+# Integraciones: Splunk HEC, IOCs y capa MITRE Navigator
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/integrations")
+def integrations_status():
+    return integrations.integration_status()
+
+
+@app.get("/api/audits/{audit_id}/iocs")
+def audit_iocs(audit_id: str, enrich: bool = False):
+    folder = _safe_audit_dir(audit_id)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Auditoria no encontrada")
+    threats = load_threats(folder)
+    # Las suprimidas tambien aportan indicadores: un puerto en escucha sigue siendo
+    # un puerto en escucha aunque la allowlist declare que es legitimo.
+    threats = threats + parse_suppressed(folder / "RESUMEN_EJECUTIVO.txt")
+    iocs = integrations.extract_iocs(threats)
+    if enrich:
+        iocs = [integrations.enrich_ioc(i) for i in iocs]
+    return {"audit_id": audit_id, "count": len(iocs), "iocs": iocs}
+
+
+@app.get("/api/audits/{audit_id}/navigator")
+def audit_navigator(audit_id: str):
+    """Capa del MITRE Navigator (formato de layer 2.1) para abrirla en attack.mitre.org."""
+    folder = _safe_audit_dir(audit_id)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Auditoria no encontrada")
+    threats = load_threats(folder) + parse_suppressed(folder / "RESUMEN_EJECUTIVO.txt")
+    layer = integrations.navigator_layer(f"Auditoria {audit_id}", threats)
+    return JSONResponse(
+        layer,
+        headers={"Content-Disposition": f'attachment; filename="navigator_{audit_id}.json"'},
+    )
+
+
+@app.post("/api/audits/{audit_id}/splunk")
+def audit_to_splunk(audit_id: str, request: Request):
+    folder = _safe_audit_dir(audit_id)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Auditoria no encontrada")
+    meta = build_audit_meta(folder)
+    result = integrations.push_to_splunk(meta, load_threats(folder))
+    auth.record_event(
+        getattr(request.state, "user", {}).get("username"),
+        "splunk_push",
+        f"{audit_id} -> {'ok' if result['ok'] else 'fallido'}",
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Archivos estaticos (frontend)
 # ---------------------------------------------------------------------------
 
@@ -1083,7 +1287,30 @@ class NoCacheStaticMiddleware(BaseHTTPMiddleware):
         return response
 
 
+PUBLIC_PATHS = {"/api/health", "/api/auth/login"}
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    """Sesion por cookie. Sin sesion, la API responde 401; la sesion caduca por
+    inactividad, no por un plazo absoluto."""
+
+    async def dispatch(self, request, call_next):
+        path = request.url.path
+        if path in PUBLIC_PATHS or not path.startswith("/api/"):
+            return await call_next(request)
+        token = request.cookies.get("audit_session", "")
+        ip = request.client.host if request.client else ""
+        session = auth.touch_session(token, ip) if token else None
+        if session is None:
+            return JSONResponse(status_code=401, content={"detail": "No hay sesion activa: iniciar sesion"})
+        if request.method in ("POST", "PUT", "PATCH", "DELETE") and session["role"] == "viewer":
+            return JSONResponse(status_code=403, content={"detail": "Rol viewer: solo lectura"})
+        request.state.user = session
+        return await call_next(request)
+
+
 app.add_middleware(SecurityMiddleware)
 app.add_middleware(NoCacheStaticMiddleware)
+app.add_middleware(AuthMiddleware)
 
 app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
