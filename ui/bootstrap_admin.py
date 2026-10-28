@@ -30,9 +30,118 @@ from __future__ import annotations
 import argparse
 import getpass
 import os
+import secrets
 import sys
 
 import auth
+
+
+def _user_env(name: str) -> str:
+    """Leer una variable de entorno del usuario desde el registro.
+
+    setx no afecta a la sesion actual y el proceso en curso tampoco ve lo que se
+    acaba de escribir. Leer HKCU\\Environment es la unica forma de saber el estado
+    real del entorno.
+    """
+    import subprocess
+    result = subprocess.run(
+        ["reg", "query", "HKCU\\Environment", "/v", name],
+        capture_output=True,
+        text=True,
+        encoding="cp850",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        return ""
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0] == name:
+            return " ".join(parts[2:]).strip()
+    return ""
+
+
+def _set_user_env(name: str, value: str) -> None:
+    """Escribir en HKCU\\Environment sin pasar por el shell.
+
+    `reg` se invoca como lista de argumentos: el hash contiene '$' y el shell lo
+    expandiria. Con subprocess sin shell no se toca.
+    """
+    import subprocess
+    result = subprocess.run(
+        ["reg", "add", "HKCU\\Environment", "/v", name, "/d", value, "/f"],
+        capture_output=True,
+        text=True,
+        encoding="cp850",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "reg add fallo")
+
+
+def _delete_user_env(name: str) -> bool:
+    import subprocess
+    result = subprocess.run(
+        ["reg", "delete", "HKCU\\Environment", "/v", name, "/f"],
+        capture_output=True,
+        text=True,
+        encoding="cp850",
+        errors="replace",
+    )
+    return result.returncode == 0
+
+
+def cmd_sign_key() -> int:
+    """Generar AUDIT_SIGN_KEY y escribirla en el entorno del usuario.
+
+    Sin esta clave los exports se firman como 'no firmado'. La clave se crea aqui
+    y va directa al registro; no se imprime ni se guarda en ningun fichero.
+    """
+    if _user_env("AUDIT_SIGN_KEY"):
+        print("AUDIT_SIGN_KEY ya existe. Use --sign-key --force para rotarla.")
+        return 0
+    key = secrets.token_urlsafe(48)
+    _set_user_env("AUDIT_SIGN_KEY", key)
+    print(f"AUDIT_SIGN_KEY generada ({len(key)} caracteres). No se imprime.")
+    print("Abre una ventana nueva de PowerShell para que surta efecto.")
+    return 0
+
+
+def cmd_rotate(user: str) -> int:
+    """Migrar AUDIT_ADMIN_PASSWORD (en claro) a AUDIT_ADMIN_PASSWORD_HASH.
+
+    Hace lo que se rompe si se hace a mano: genera el scrypt sin imprimir la clave,
+    lo escribe directo en HKCU (el shell trunca el valor en 'scrypt' cuando el hash
+    va entre comillas dobles) y sincroniza la cuenta existente, porque
+    bootstrap_admin() solo crea el admin si no hay ninguno.
+    """
+    password = _user_env("AUDIT_ADMIN_PASSWORD")
+    if not password:
+        print("AUDIT_ADMIN_PASSWORD no esta definida en el entorno del usuario: no hay nada que rotar.")
+        return 1
+
+    digest = auth.password_hash_string(password)
+    if not auth.verify_hash_string(password, digest):
+        print("El hash generado no verifica la clave: no se toca nada.", file=sys.stderr)
+        return 1
+
+    _set_user_env("AUDIT_ADMIN_PASSWORD_HASH", digest)
+    print(f"AUDIT_ADMIN_PASSWORD_HASH escrita ({len(digest)} caracteres, prefijo {digest[:7]}...).")
+
+    auth.init_auth()
+    try:
+        auth.reset_password(user, password)
+        print(f"Cuenta '{user}' sincronizada con el hash (sesiones activas revocadas).")
+    except ValueError as exc:
+        print(f"No se pudo sincronizar la cuenta: {exc}", file=sys.stderr)
+        return 1
+
+    if _delete_user_env("AUDIT_ADMIN_PASSWORD"):
+        print("AUDIT_ADMIN_PASSWORD eliminada del entorno del usuario.")
+    else:
+        print("AUDIT_ADMIN_PASSWORD ya no existia.")
+
+    print("Abre una ventana nueva de PowerShell para que el cambio surta efecto.")
+    return 0
 
 
 def cmd_hash() -> int:
@@ -61,15 +170,24 @@ def cmd_verify(hash_string: str, password: str) -> int:
 
 
 def cmd_posture() -> int:
-    posture = auth.secret_posture()
-    for key, value in posture.items():
-        print(f"{key}: {value}")
-    if posture["admin_password_source"] == "claro":
-        print(
-            "Aviso: AUDIT_ADMIN_PASSWORD esta en claro. Generar el hash con "
-            "--hash y migrar a AUDIT_ADMIN_PASSWORD_HASH."
-        )
-    if not posture["sign_key_defined"]:
+    """Postura real del entorno: HKCU, no la sesion actual.
+
+    setx escribe en el registro y no se hereda al proceso en curso, asi que leer
+    os.environ engana: dice 'none' cuando la variable si existe.
+    """
+    user = _user_env("AUDIT_ADMIN_USER") or os.environ.get("AUDIT_ADMIN_USER", "")
+    hash_string = _user_env("AUDIT_ADMIN_PASSWORD_HASH") or os.environ.get("AUDIT_ADMIN_PASSWORD_HASH", "")
+    clear = _user_env("AUDIT_ADMIN_PASSWORD") or os.environ.get("AUDIT_ADMIN_PASSWORD", "")
+    sign_key = _user_env("AUDIT_SIGN_KEY") or os.environ.get("AUDIT_SIGN_KEY", "")
+
+    print(f"admin_user: {user or None}")
+    print("admin_password_source:", "hash" if hash_string.strip() else "claro" if clear.strip() else "none")
+    print("sign_key_defined:", bool(sign_key.strip()))
+    if clear.strip():
+        print("Aviso: AUDIT_ADMIN_PASSWORD sigue en claro. Ejecuta --rotate para migrarla a hash.")
+    elif not hash_string.strip():
+        print("Aviso: no hay clave de administrador en el entorno.")
+    if not sign_key.strip():
         print("Aviso: AUDIT_SIGN_KEY no definida: los exports se firman como 'no firmado'.")
     return 0
 
@@ -80,8 +198,15 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--verify", help="Comprobar una contraseña contra un hash")
     parser.add_argument("--hash-string", help="Hash a comprobar (formato scrypt$<salt>$<hash>)")
     parser.add_argument("--posture", action="store_true", help="Mostrar la postura de secretos del entorno")
+    parser.add_argument("--rotate", action="store_true", help="Migrar la clave en claro a hash y borrarla")
+    parser.add_argument("--sign-key", action="store_true", help="Generar AUDIT_SIGN_KEY si no existe")
+    parser.add_argument("--user", default="", help="Usuario a sincronizar (por defecto AUDIT_ADMIN_USER)")
     args = parser.parse_args(argv)
 
+    if args.sign_key:
+        return cmd_sign_key()
+    if args.rotate:
+        return cmd_rotate(args.user or _user_env("AUDIT_ADMIN_USER") or "sammi")
     if args.hash:
         return cmd_hash()
     if args.verify:
