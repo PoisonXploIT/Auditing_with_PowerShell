@@ -291,6 +291,41 @@ def coverage_gap(layer: dict[str, Any], known_techniques: list[str]) -> list[str
     return [tech for tech in known_techniques if tech not in present]
 
 
+def coverage_report(threats: list[dict[str, Any]], target: list[str]) -> dict[str, Any]:
+    """Cobertura medida: que tecnicas del objetivo se observan, cuales no, y con que
+    severidad están los hallazgos que si se observan.
+
+    El hueco sin severidad no prioriza nada: saber que T1059.001 no se detecta dice
+    poco si lo que si se detecta es un LOW. Por eso se desglosa por severidad.
+    """
+    layer = navigator_layer("Cobertura", threats)
+    observed = {t["techniqueID"]: t["score"] for t in layer["techniques"]}
+    gap = [tech for tech in target if tech not in observed]
+    by_severity: dict[str, dict[str, int]] = {}
+    for threat in threats:
+        severity = (threat.get("severity") or threat.get("Severity") or "LOW").upper()
+        technique = threat.get("mitre_technique") or threat.get("MitreTechnique") or ""
+        bucket = by_severity.setdefault(
+            severity,
+            {"hallazgos": 0, "con_tecnica": 0, "sin_tecnica": 0, "dentro_del_target": 0},
+        )
+        bucket["hallazgos"] += 1
+        if technique:
+            bucket["con_tecnica"] += 1
+            if technique in target:
+                bucket["dentro_del_target"] += 1
+        else:
+            bucket["sin_tecnica"] += 1
+    hit = len(target) - len(gap)
+    return {
+        "target": list(target),
+        "observed": sorted(observed),
+        "gap": gap,
+        "coverage_pct": round(100.0 * hit / len(target), 1) if target else 0.0,
+        "by_severity": by_severity,
+    }
+
+
 # Tecnicas que la herramienta pretende cubrir (son las del MitreMap del script PowerShell).
 # Comparar la capa observada contra esta lista convierte el "no miramos X" en un hueco
 # medible: una tecnica declarada pero no observada en ninguna ejecucion es una deteccion

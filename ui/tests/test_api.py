@@ -262,6 +262,46 @@ class EvidenceApiTests(unittest.TestCase):
         self.assertEqual(data["observed"], ["T1571"])
         self.assertEqual(len(data["declared_gaps"]), 2)
         self.assertIn("T1059.001", data["gap_vs_target"])
+        # El hueco se expresa en porcentaje para que se pueda comparar entre runs.
+        target = data["target"]
+        self.assertEqual(
+            data["coverage_pct"],
+            round(100.0 * (len(target) - len(data["gap_vs_target"])) / len(target), 1),
+        )
+        self.assertTrue(data["by_severity"], "el desglose por severidad no puede estar vacio")
+
+    def test_allowlist_impact_parseable(self):
+        """El resumen declara el impacto de cada regla; la UI lo necesita medido."""
+        text = (
+            "AMENAZAS SUPRIMIDAS POR ALLOWLIST LOCAL\n\n"
+            "Suprimidas: 2 (no cuentan en el nivel de riesgo)\n"
+            "  - [MEDIUM] Puerto sospechoso en escucha | splunkd en 9999\n"
+            "    Motivo: Splunk local [allowlist: splunk-web]\n"
+            "\n"
+            "IMPACTO DE LA ALLOWLIST (ruido medido, no supuesto)\n\n"
+            "Reglas: 3 | Detecciones suprimidas: 2 | Reglas sin efecto: 1\n"
+            "  - splunk-web: suprime 1; si se elimina reaparecen 0 [tipos: Puerto sospechoso en escucha]\n"
+            "  - node-dev: suprime 1; si se elimina reaparecen 1 [tipos: Puerto sospechoso en escucha]\n"
+            "  - ghost: suprime 0; si se elimina reaparecen 0 [tipos: Puerto sospechoso en escucha]\n"
+            "\n"
+            "COBERTURA DE LA AUDITORIA\n\nCobertura: COMPLETA (ninguna comprobacion omitida)\n"
+        )
+        tmp = Path(tempfile.mkdtemp()) / "RESUMEN_EJECUTIVO.txt"
+        tmp.write_text(text, encoding="utf-8", newline="\n")
+        impact = main.parse_allowlist_impact(tmp)
+        self.assertEqual(len(impact), 3)
+        self.assertEqual(impact[0], {"id": "splunk-web", "suppressed": 1, "reaparece_si_se_elimina": 0, "threat_types": "Puerto sospechoso en escucha"})
+        self.assertEqual(impact[1]["reaparece_si_se_elimina"], 1)
+        self.assertEqual(impact[2]["suppressed"], 0)
+        # Un resumen sin la seccion no debe romperse ni inventar datos.
+        self.assertEqual(main.parse_allowlist_impact(Path("/no/existe.txt")), [])
+
+    def test_dashboard_expone_cobertura_y_ruido(self):
+        meta = client.get("/api/audits/Auditoria_SAMPLE").json()
+        self.assertIn("coverage", meta)
+        self.assertIn("allowlist_impact", meta)
+        self.assertTrue(meta["coverage"]["target"], "el objetivo de tecnicas no puede estar vacio")
+
 
     def test_audit_id_inexistente(self):
         self.assertEqual(client.get("/api/audits/Auditoria_NO_EXISTE/manifest").status_code, 404)

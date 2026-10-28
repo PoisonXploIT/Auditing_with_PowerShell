@@ -65,6 +65,18 @@ class IntegrationTests(unittest.TestCase):
         gap = integrations.coverage_gap(layer, ["T1571", "T1547.001", "T1059.001", "T1053.008"])
         self.assertEqual(gap, ["T1059.001", "T1053.008"])
 
+    def test_coverage_report_desglosa_por_severidad(self):
+        report = integrations.coverage_report(THREATS, ["T1571", "T1547.001", "T1059.001"])
+        self.assertEqual(report["gap"], ["T1059.001"])
+        self.assertEqual(report["coverage_pct"], 66.7)
+        self.assertEqual(report["by_severity"]["HIGH"]["hallazgos"], 2)
+        self.assertEqual(report["by_severity"]["HIGH"]["dentro_del_target"], 2)
+        # Un hallazgo sin tecnica MITRE es un hueco de mapeo, no una cobertura.
+        sin_tecnica = integrations.coverage_report([{"Severity": "LOW", "Description": "ruido"}], ["T1571"])
+        self.assertEqual(sin_tecnica["by_severity"]["LOW"]["sin_tecnica"], 1)
+        self.assertEqual(sin_tecnica["gap"], ["T1571"])
+        self.assertEqual(integrations.coverage_report(THREATS, [])["coverage_pct"], 0.0)
+
     def test_splunk_push_sin_configuracion_no_crash(self):
         os.environ.pop("SPLUNK_HEC_URL", None)
         os.environ.pop("SPLUNK_HEC_TOKEN", None)

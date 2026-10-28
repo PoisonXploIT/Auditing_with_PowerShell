@@ -220,6 +220,11 @@ def build_audit_meta(folder: Path) -> dict:
         "risk_level": compute_risk_level(severity_counts),
         "coverage_gaps": parse_coverage_gaps(folder / "RESUMEN_EJECUTIVO.txt"),
         "suppressed": parse_suppressed(folder / "RESUMEN_EJECUTIVO.txt"),
+        "allowlist_impact": parse_allowlist_impact(folder / "RESUMEN_EJECUTIVO.txt"),
+        "coverage": integrations.coverage_report(
+            threats + parse_suppressed(folder / "RESUMEN_EJECUTIVO.txt"),
+            integrations.TARGET_TECHNIQUES,
+        ),
         "modules": modules,
     }
 
@@ -869,6 +874,39 @@ def parse_coverage_gaps(path: Path) -> list:
     return [line.strip()[2:] for line in match.group(1).splitlines() if line.strip().startswith("- Omision:")]
 
 
+def parse_allowlist_impact(path: Path) -> list:
+    """Extrae el impacto medido de cada regla de allowlist del resumen.
+
+    El script PowerShell escribe, por regla, cuantas detecciones suprime y cuantas
+    reaparecerian si se eliminara. Sin ese dato la allowlist es una declaracion de
+    intenciones; con el dato se puede decidir que regla sobra.
+    """
+    if not path.exists():
+        return []
+    text = path.read_text(encoding="utf-8-sig", errors="replace")
+    match = re.search(
+        r"^IMPACTO DE LA ALLOWLIST[^\n]*\n(.*?)(?=^COBERTURA|^HALLAZGOS|^RECOMENDACIONES|^AMENAZAS SUPRIMIDAS)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    if not match:
+        return []
+    entries = []
+    for line in match.group(1).splitlines():
+        line = line.strip()
+        m = re.match(r"^-\s+([A-Za-z0-9_.-]+):\s+suprime\s+(\d+);\s+si se elimina reaparecen\s+(\d+)(?:\s+\[tipos:\s+(.*?)\])?$", line)
+        if m:
+            entries.append(
+                {
+                    "id": m.group(1),
+                    "suppressed": int(m.group(2)),
+                    "reaparece_si_se_elimina": int(m.group(3)),
+                    "threat_types": (m.group(4) or "").strip(),
+                }
+            )
+    return entries
+
+
 def parse_recommendations(path: Path) -> list:
     """Extrae las recomendaciones del RESUMEN_EJECUTIVO.txt."""
     if not path.exists():
@@ -1469,13 +1507,15 @@ def audit_coverage(audit_id: str):
     if folder is None:
         raise HTTPException(status_code=404, detail="Auditoria no encontrada")
     threats = load_threats(folder) + parse_suppressed(folder / "RESUMEN_EJECUTIVO.txt")
-    layer = integrations.navigator_layer(f"Auditoria {audit_id}", threats)
-    observed = sorted({t["techniqueID"] for t in layer["techniques"]})
+    report = integrations.coverage_report(threats, integrations.TARGET_TECHNIQUES)
     return {
         "audit_id": audit_id,
-        "observed": observed,
+        "observed": report["observed"],
+        "target": report["target"],
         "declared_gaps": build_audit_meta(folder)["coverage_gaps"],
-        "gap_vs_target": integrations.coverage_gap(layer, integrations.TARGET_TECHNIQUES),
+        "gap_vs_target": report["gap"],
+        "coverage_pct": report["coverage_pct"],
+        "by_severity": report["by_severity"],
     }
 
 

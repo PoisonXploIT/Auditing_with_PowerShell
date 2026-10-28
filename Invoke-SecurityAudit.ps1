@@ -481,6 +481,36 @@ function Test-AllowedByAllowlist {
     return $null
 }
 
+# Impacto medido de cada regla: cuantas detecciones suprime y cuantas volverian si se
+# elimina. No es una suposicion: se recalcula la supresion con la regla fuera, de modo
+# que una regla redundante (otra ya cubre el caso) se detecta como candidata a borrar.
+function Get-AllowlistImpact {
+    param([array]$Rules = $null, [array]$Suppressed = $null)
+    if (-not $Rules) { $Rules = $Global:Allowlist }
+    if (-not $Suppressed) { $Suppressed = $Global:SuppressedThreats }
+
+    $impact = @()
+    foreach ($rule in $Rules) {
+        $matched = @($Suppressed | Where-Object { $_.AllowlistId -eq $rule.Id })
+        $reaparece = 0
+        foreach ($s in $matched) {
+            $saved = $Global:Allowlist
+            $Global:Allowlist = @($Rules | Where-Object { $_.Id -ne $rule.Id })
+            $still = Test-AllowedByAllowlist -ThreatType $s.ThreatType -Description $s.Description -Details $s.Details
+            $Global:Allowlist = $saved
+            if (-not $still) { $reaparece++ }
+        }
+        $impact += [PSCustomObject]@{
+            Id                   = $rule.Id
+            Reason               = $rule.Reason
+            ThreatTypes         = ($rule.ThreatTypes -join ", ")
+            Suppressed          = $matched.Count
+            ReapareceSiSeElimina = $reaparece
+        }
+    }
+    return $impact
+}
+
 # Fusiona una allowlist externa (JSON) con la built-in.
 function Load-ExternalAllowlist {
     param([string]$Path)
@@ -549,6 +579,7 @@ function Add-ThreatDetection {
             AllowlistId    = $allowed.Id
             Reason         = $allowed.Reason
             MitreTechnique = if ($mitre) { $mitre.Id } else { "" }
+            Details        = $Details
         }
         Write-AuditLog "  [ALLOWLIST] Suprimida '$ThreatType' por $($allowed.Id): $($allowed.Reason)" -Level INFO
         return
@@ -1764,6 +1795,21 @@ function New-ExecutiveSummary {
             "" | Out-File $summaryPath -Append -Encoding UTF8
         }
 
+        # Impacto medido de cada regla: cuantas detecciones suprime y cuantas volverian
+        # si se elimina. Una regla que no suprime nada es ruido en el propio informe.
+        $impact = Get-AllowlistImpact
+        if ($impact.Count -gt 0) {
+            "IMPACTO DE LA ALLOWLIST (ruido medido, no supuesto)" | Out-File $summaryPath -Append -Encoding UTF8
+            "" | Out-File $summaryPath -Append -Encoding UTF8
+            $sumSup = ($impact | Measure-Object -Property Suppressed -Sum).Sum
+            $vacias = @($impact | Where-Object { $_.Suppressed -eq 0 }).Count
+            "Reglas: $($impact.Count) | Detecciones suprimidas: $sumSup | Reglas sin efecto: $vacias" | Out-File $summaryPath -Append -Encoding UTF8
+            foreach ($i in $impact) {
+                "  - $($i.Id): suprime $($i.Suppressed); si se elimina reaparecen $($i.ReapareceSiSeElimina) [tipos: $($i.ThreatTypes)]" | Out-File $summaryPath -Append -Encoding UTF8
+            }
+            "" | Out-File $summaryPath -Append -Encoding UTF8
+        }
+
         # Cobertura real: deja claro que NO se miro, para no vender una auditoria
         # completa cuando se ejecuto sin privilegios.
         "COBERTURA DE LA AUDITORIA" | Out-File $summaryPath -Append -Encoding UTF8
@@ -2241,6 +2287,33 @@ function Invoke-DetectionSelfTest {
         }
         $Global:Allowlist = $saved
     }
+
+    # --- 6c. Impacto de cada regla: medir, no suponer ---
+    # Dos reglas cubren lo mismo: la duplicada no aporta supresiones y al quitar la
+    # original no reaparece nada. La de node es la unica que cubre su caso, asi que
+    # eliminarla si hace reaparecer el hallazgo. Eso es lo que se comprueba.
+    $probeRules = @(
+        @{ Id = "splunk-web";     ThreatTypes = @("Puerto sospechoso en escucha"); Ports = @(9999);  Process = "splunkd";  Reason = "Splunk Web local" }
+        @{ Id = "splunk-web-dup"; ThreatTypes = @("Puerto sospechoso en escucha"); Ports = @(9999);  Process = "splunkd";  Reason = "Regla duplicada" }
+        @{ Id = "node-dev";       ThreatTypes = @("Puerto sospechoso en escucha"); Ports = @(8080);  Process = "node";     Reason = "Servidor de desarrollo" }
+        @{ Id = "ghost";          ThreatTypes = @("Puerto sospechoso en escucha"); Ports = @(12345); Process = "fantasma"; Reason = "Regla que no toca nada" }
+    )
+    $probeSuppressed = @(
+        [PSCustomObject]@{ ThreatType = "Puerto sospechoso en escucha"; Severity = "MEDIUM"; Description = "splunkd 9999"; Details = [PSCustomObject]@{ ProcessName = 'splunkd'; LocalPort = 9999 }; AllowlistId = "splunk-web" }
+        [PSCustomObject]@{ ThreatType = "Puerto sospechoso en escucha"; Severity = "LOW";    Description = "node 8080";     Details = [PSCustomObject]@{ ProcessName = 'node'; LocalPort = 8080 }; AllowlistId = "node-dev" }
+    )
+    $savedGlobal = $Global:Allowlist
+    $Global:Allowlist = $probeRules
+    $impact = Get-AllowlistImpact -Rules $probeRules -Suppressed $probeSuppressed
+    $Global:Allowlist = $savedGlobal
+    $byId = @{}
+    foreach ($i in $impact) { $byId[$i.Id] = $i }
+    $results += Check -Suite "Impacto" -Case "splunk-web suprime al menos 1" -Expected $true -Actual ($byId["splunk-web"].Suppressed -gt 0)
+    $results += Check -Suite "Impacto" -Case "splunk-web es redundante: al quitarla no reaparece nada" -Expected $false -Actual ($byId["splunk-web"].ReapareceSiSeElimina -gt 0)
+    $results += Check -Suite "Impacto" -Case "node-dev es la unica regla: al quitarlo reaparece el hallazgo" -Expected $true -Actual ($byId["node-dev"].ReapareceSiSeElimina -gt 0)
+    $results += Check -Suite "Impacto" -Case "la regla duplicada no aporta supresiones" -Expected $false -Actual ($byId["splunk-web-dup"].Suppressed -gt 0)
+    $results += Check -Suite "Impacto" -Case "la regla sin efecto se declara sin efecto" -Expected $false -Actual ($byId["ghost"].Suppressed -gt 0)
+    $results += Check -Suite "Impacto" -Case "el total medido coincide con las supresiones (2)" -Expected $true -Actual (($impact | Measure-Object -Property Suppressed -Sum).Sum -eq 2)
 
     # --- 6c. Ruido: falsos positivos reales que NO deben disparar, y control de
     #           sobre-supresion (una regla no puede tapar todo lo que hace ese proceso).

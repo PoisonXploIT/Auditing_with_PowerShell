@@ -477,9 +477,27 @@ Una entrada suprime solo los `ThreatTypes` listados, nunca todo lo que haga el p
 La allowlist externa se **fusiona** con la built-in (no la sustituye). Una entrada debe
 definir al menos `process` o `ports`.
 
+### Impacto medido de cada regla (`Get-AllowlistImpact`)
+
+Declarar una allowlist no basta: hay que medir lo que hace. El script escribe en el
+resumen ejecutivo la seccion `IMPACTO DE LA ALLOWLIST` con, por regla, cuantas
+detecciones suprime y cuantas reaparecerian si se eliminara. No se estima: se
+recalcula la supresion con la regla fuera de la lista.
+
+```text
+Reglas: 8 | Detecciones suprimidas: 1 | Reglas sin efecto: 7
+  - splunk-local: suprime 1; si se elimina reaparecen 1 [tipos: Puerto sospechoso en escucha]
+  - tailscale:    suprime 0; si se elimina reaparecen 0 [...]
+```
+
+Con ese dato la decision deja de ser intuitiva: una regla que suprime 0 en esta maquina
+es ruido dentro del propio informe, y una cuya eliminacion no hace reaparecer nada es
+redundante porque otra regla ya cubre el caso. La UI lo muestra en la tarjeta "Ruido
+medido por regla de allowlist".
+
 ### Selftest de detección (`-SelfTest`)
 
-102 casos de regex, LOLBAS, direcciones privadas, MITRE, allowlist, deduplicación y
+117 casos de regex, LOLBAS, direcciones privadas, MITRE, allowlist, deduplicación,
 firmas. No audita nada y devuelve 1 si algún caso falla (útil en CI):
 
 ```powershell
@@ -557,11 +575,11 @@ vencidos con los dias de retraso. El KPI "SLA vencido" va en la cabecera.
 
 `.github/workflows/ci.yml` (runner Windows, dos jobs):
 
-1. **Selftest de deteccion**: `Invoke-SecurityAudit.ps1 -SelfTest` (102 casos) y otra
+1. **Selftest de deteccion**: `Invoke-SecurityAudit.ps1 -SelfTest` (117 casos) y otra
    pasada con `-AllowlistPath` para validar que las reglas derivadas del triage matchean
-   por si solas (103 casos). El script sale con codigo 1 si algun caso falla, lo que
-   rompe el build.
-2. **Tests de baseline, API, auth e integraciones**: `python -m unittest discover -s ui/tests` (56 casos).
+   por si solas (un caso extra por regla externa). El script sale con codigo 1 si algun
+   caso falla, lo que rompe el build.
+2. **Tests de baseline, API, auth e integraciones**: `python -m unittest discover -s ui/tests` (99 casos).
 
 ### Autenticacion y sesiones
 
@@ -707,10 +725,14 @@ devuelve `"signed": false` con el motivo; no inventa una firma.
 
 ### Cobertura real frente a la declarada
 
-`GET /api/audits/{id}/coverage` devuelve tres cosas: las tecnicas MITRE observadas, las
-omisiones declaradas por el propio script (`coverage_gaps`) y el hueco frente a las 17
-tecnicas que la herramienta pretende cubrir (`TARGET_TECHNIQUES`). Una tecnica declarada
-que no aparece en ninguna ejecucion es una deteccion que no esta disparando.
+`GET /api/audits/{id}/coverage` devuelve las tecnicas MITRE observadas, el objetivo
+(`TARGET_TECHNIQUES`), el hueco entre ambos, el porcentaje de cobertura y el desglose
+por severidad (cuantos hallazgos de cada severidad tienen tecnica asignada y cuantos no).
+Una tecnica declarada que no aparece en ninguna ejecucion es una deteccion que no esta
+disparando; un hallazgo sin tecnica es un hueco de mapeo, no una cobertura. El numero de
+omisiones declaradas por el script (`coverage_gaps`) sigue apareciendo como nota.
+Antes `coverage_gap` existia en el JSON y nadie lo veia: ahora la tarjeta de cobertura
+se renderiza en el dashboard.
 
 ### El selftest mide ruido, no solo deteccion
 

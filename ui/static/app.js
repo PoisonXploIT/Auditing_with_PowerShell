@@ -338,11 +338,33 @@ function dashboardHtml(a) {
     : `<div class="text-muted">Sin recomendaciones pendientes.</div>`;
 
   const gaps = a.coverage_gaps || [];
-  const coverage = gaps.length
+  const cov = a.coverage || {};
+  const target = cov.target || [];
+  const covGap = cov.gap || [];
+  const bySeverity = cov.by_severity || {};
+  const severityRows = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+    .filter((s) => bySeverity[s])
+    .map(
+      (s) =>
+        `<li>${s}: ${bySeverity[s].hallazgos} hallazgos, ${bySeverity[s].con_tecnica} con tecnica MITRE, ${bySeverity[s].sin_tecnica} sin tecnica asignada</li>`
+    )
+    .join("");
+  const coverage = target.length
     ? `<div class="card" style="border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);padding:12px">
-        <div style="font-size:12px;color:var(--text-faint);text-transform:uppercase;letter-spacing:0.5px">Cobertura: PARCIAL (${gaps.length} omisiones)</div>
-        <ul class="recs" style="margin-top:8px">${gaps.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>
-        <div class="text-muted" style="margin-top:6px;font-size:12px">Ejecuta la auditoria elevada para cerrar estas omisiones.</div>
+        <div style="font-size:12px;color:var(--text-faint);text-transform:uppercase;letter-spacing:0.5px">Cobertura MITRE medida: ${cov.coverage_pct}% (${target.length - covGap.length}/${target.length})</div>
+        <div class="bar-track" style="margin-top:8px"><span class="bar-fill" style="width:${Math.min(100, cov.coverage_pct || 0)}%;background:var(--accent)"></span></div>
+        ${covGap.length ? `<ul class="recs" style="margin-top:8px"><li>Huecos de deteccion: ${covGap.map((t) => `<code>${esc(t)}</code>`).join(", ")}</li></ul>` : `<div class="text-muted" style="margin-top:6px;font-size:12px">Ninguna tecnica del objetivo queda sin cobertura.</div>`}
+        ${severityRows ? `<ul class="recs" style="margin-top:8px">${severityRows}</ul>` : ""}
+        ${gaps.length ? `<div class="text-muted" style="margin-top:6px;font-size:12px">Omisiones declaradas por el script: ${gaps.length}. Ejecuta la auditoria elevada para cerrarlas.</div>` : ""}
+      </div>`
+    : "";
+
+  const impact = a.allowlist_impact || [];
+  const noiseCard = impact.length
+    ? `<div class="card" style="border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);padding:12px">
+        <div style="font-size:12px;color:var(--text-faint);text-transform:uppercase;letter-spacing:0.5px">Ruido medido por regla de allowlist</div>
+        <ul class="recs" style="margin-top:8px">${impact.map((i) => `<li><strong>${esc(i.id)}</strong> — suprime ${i.suppressed}; si se elimina reaparecen ${i.reaparece_si_se_elimina}${i.threat_types ? ` <span class="text-muted" style="font-size:12px">(${esc(i.threat_types)})</span>` : ""}</li>`).join("")}</ul>
+        <div class="text-muted" style="margin-top:6px;font-size:12px">Una regla que suprime 0 es candidata a borrarse; una cuya eliminacion no hace reaparecer nada es redundante.</div>
       </div>`
     : "";
 
@@ -414,6 +436,7 @@ function dashboardHtml(a) {
   <div class="kpi-grid" style="margin-top:18px">${kpis}</div>
 
   ${coverage}
+  ${noiseCard}
   ${suppressedCard}
   ${trendCard}
 
