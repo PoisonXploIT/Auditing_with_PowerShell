@@ -33,6 +33,7 @@ const state = {
   audit: null,
   moduleView: null,
   pollTimer: null,
+  source: null,
   running: false,
 };
 
@@ -883,7 +884,7 @@ async function startRun(elevated) {
       body: JSON.stringify({ elevated }),
     });
     state.runId = r.run_id;
-    pollRun(r.run_id);
+    streamRun(r.run_id);
   } catch (e) {
     state.running = false;
     toast("Error al iniciar la auditoria: " + e.message, "error");
@@ -975,42 +976,78 @@ function renderRunProgress(el) {
   });
 }
 
+function handleRunUpdate(r) {
+  state.runStatus = r.status;
+  const el = document.getElementById("view-run");
+  if (state.running) renderRunProgress(el);
+  if (!r.finished) return false;
+  state.running = false;
+  const st = r.status;
+  if (st.phase === "done") {
+    toast("Auditoria completada", "success");
+  } else if (st.phase === "error") {
+    toast("La auditoria termino con errores", "error");
+  }
+  // Refrescar la lista para que Panel General e Historial muestren la
+  // auditoria terminada sin necesidad de recargar la pagina.
+  loadAudits().then(() => {
+    if (st.phase === "done" && st.auditPath) {
+      const folder = String(st.auditPath).split(/[\\/]/).pop();
+      if (state.audits.some((a) => a.id === folder)) {
+        state.selectedAuditId = folder;
+      }
+    }
+    renderRun();
+  });
+  return true;
+}
+
 function pollRun(runId) {
   stopPolling();
   state.pollTimer = setInterval(async () => {
     try {
       const r = await api("/api/runs/" + runId);
-      state.runStatus = r.status;
-      const el = document.getElementById("view-run");
-      if (state.running) renderRunProgress(el);
-      if (r.finished) {
-        stopPolling();
-        state.running = false;
-        const st = r.status;
-        if (st.phase === "done") {
-          toast("Auditoria completada", "success");
-        } else if (st.phase === "error") {
-          toast("La auditoria termino con errores", "error");
-        }
-        // Refrescar la lista para que Panel General e Historial muestren la
-        // auditoria terminada sin necesidad de recargar la pagina.
-        await loadAudits();
-        if (st.phase === "done" && st.auditPath) {
-          const folder = String(st.auditPath).split(/[\\/]/).pop();
-          if (state.audits.some((a) => a.id === folder)) {
-            state.selectedAuditId = folder;
-          }
-        }
-        renderRun();
-      }
+      if (handleRunUpdate(r)) stopPolling();
     } catch (_) {}
   }, 700);
+}
+
+function streamRun(runId) {
+  stopPolling();
+  if (typeof EventSource !== "function") {
+    pollRun(runId);
+    return;
+  }
+  const source = new EventSource("/api/runs/" + encodeURIComponent(runId) + "/stream");
+  state.source = source;
+  source.onmessage = (event) => {
+    try {
+      const r = JSON.parse(event.data);
+      if (handleRunUpdate(r)) source.close();
+    } catch (_) {}
+  };
+  source.addEventListener("end", () => source.close());
+  source.addEventListener("timeout", () => {
+    source.close();
+    state.source = null;
+    pollRun(runId);
+  });
+  source.onerror = () => {
+    // Si el SSE falla (proxy, navegador antiguo), volver al polling.
+    source.close();
+    state.source = null;
+    pollRun(runId);
+  };
 }
 
 function stopPolling() {
   if (state.pollTimer) {
     clearInterval(state.pollTimer);
     state.pollTimer = null;
+  }
+  if (state.source) {
+    state.source.close();
+    state.source = null;
   }
 }
 

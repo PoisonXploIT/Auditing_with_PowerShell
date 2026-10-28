@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
+  <a class="skip-link" href="#content">Saltar al contenido</a>
   <div class="app">
     <aside class="sidebar">
       <div class="brand">
@@ -22,29 +23,29 @@
         </div>
       </div>
 
-      <nav class="nav">
-        <button class="nav-item" data-view="dashboard">
-          <svg viewBox="0 0 24 24"><path d="M3 3h8v8H3zM13 3h8v5h-8zM13 10h8v11h-8zM3 13h8v8H3z"/></svg>
+      <nav class="nav" aria-label="Secciones de la consola">
+        <button class="nav-item" data-view="dashboard" aria-label="Panel General">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h8v8H3zM13 3h8v5h-8zM13 10h8v11h-8zM3 13h8v8H3z"/></svg>
           <span>Panel General</span>
         </button>
-        <button class="nav-item" data-view="audits">
-          <svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+        <button class="nav-item" data-view="audits" aria-label="Auditorias">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
           <span>Auditorias</span>
         </button>
-        <button class="nav-item" data-view="run">
-          <svg viewBox="0 0 24 24"><path d="M7 4l14 8-14 8z"/></svg>
+        <button class="nav-item" data-view="run" aria-label="Nueva Auditoria">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4l14 8-14 8z"/></svg>
           <span>Nueva Auditoria</span>
         </button>
-        <button class="nav-item" data-view="baseline">
-          <svg viewBox="0 0 24 24"><path d="M3 21h18M3 12l4 4 5-7 4 4 5-6"/></svg>
+        <button class="nav-item" data-view="baseline" aria-label="Baseline">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 21h18M3 12l4 4 5-7 4 4 5-6"/></svg>
           <span>Baseline</span>
         </button>
-        <button class="nav-item" data-view="integrations">
-          <svg viewBox="0 0 24 24"><path d="M4 4h6v6H4zM14 14h6v6h-6zM10 7h4M7 10v4"/></svg>
+        <button class="nav-item" data-view="integrations" aria-label="Integraciones">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 14h6v6h-6zM10 7h4M7 10v4"/></svg>
           <span>Integraciones</span>
         </button>
-        <button class="nav-item" data-view="admin" id="nav-admin" hidden>
-          <svg viewBox="0 0 24 24"><path d="M12 3l7 4v5c0 4-3 6-7 7-4-1-7-3-7-7V7l7-4z"/></svg>
+        <button class="nav-item" data-view="admin" id="nav-admin" hidden aria-label="Administracion">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 4v5c0 4-3 6-7 7-4-1-7-3-7-7V7l7-4z"/></svg>
           <span>Administracion</span>
         </button>
       </nav>
@@ -60,39 +61,39 @@
 
     <main class="main">
       <header class="topbar">
-        <div class="topbar-title" id="topbar-title">Panel General</div>
+        <div class="topbar-title" id="topbar-title" role="heading" aria-level="1">Panel General</div>
         <div class="topbar-actions">
-          <button class="btn btn-ghost" id="btn-refresh">
-            <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 6.3M20 4v7h-7"/></svg>
+          <button class="btn btn-ghost" id="btn-refresh" aria-label="Refrescar la vista">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.3M20 4v7h-7"/></svg>
             Refrescar
           </button>
         </div>
       </header>
 
-      <section class="content">
+      <section class="content" id="content">
         <!-- Panel General -->
-        <div class="view" id="view-dashboard"></div>
+        <div class="view" id="view-dashboard" role="tabpanel" aria-label="Panel General"></div>
 
         <!-- Auditorias -->
-        <div class="view" id="view-audits"></div>
+        <div class="view" id="view-audits" role="tabpanel" aria-label="Auditorias"></div>
 
         <!-- Nueva Auditoria -->
-        <div class="view" id="view-run"></div>
+        <div class="view" id="view-run" role="tabpanel" aria-label="Nueva Auditoria"></div>
 
         <!-- Baseline -->
-        <div class="view" id="view-baseline"></div>
+        <div class="view" id="view-baseline" role="tabpanel" aria-label="Baseline"></div>
 
         <!-- Integraciones -->
-        <div class="view" id="view-integrations"></div>
+        <div class="view" id="view-integrations" role="tabpanel" aria-label="Integraciones"></div>
 
         <!-- Administracion -->
-        <div class="view" id="view-admin"></div>
+        <div class="view" id="view-admin" role="tabpanel" aria-label="Administracion"></div>
       </section>
     </main>
   </div>
 
   <!-- Login: la API responde 401 sin sesion, esta capa lo resuelve -->
-  <div class="login-overlay" id="login-overlay" hidden>
+  <div class="login-overlay" id="login-overlay" hidden role="dialog" aria-modal="true" aria-label="Acceso a la consola">
     <div class="login-card">
       <h1>Consola de Auditoria</h1>
       <p class="text-muted">Sesion de 30 minutos que se renueva con actividad. Sin actividad, la sesion caduca.</p>
@@ -105,7 +106,7 @@
     </div>
   </div>
 
-  <div class="toast" id="toast"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script src="app.js"></script>
   <script src="baseline.js"></script>

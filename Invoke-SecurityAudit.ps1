@@ -1894,6 +1894,27 @@ function New-EvidenceManifest {
             )
         ) -replace '-', '').ToLower()
 
+        Write-AuditLog "[EVIDENCIA] Manifiesto con $($entries.Count) ficheros, root SHA-256 $rootHash" -Level INFO
+
+        # Esa linea escribe en auditoria.log, de modo que su hash ya no coincide con
+        # el calculado unas lineas antes. Sin esta segunda pasada, la verificacion de
+        # integridad marcaria "alterado" una evidencia intacta.
+        $logPath = Join-Path $AuditPath "auditoria.log"
+        if (Test-Path $logPath) {
+            foreach ($e in $entries) {
+                if ($e.path -eq "auditoria.log") {
+                    $e.sha256 = (Get-FileHash -Path $logPath -Algorithm SHA256).Hash.ToLower()
+                    $e.bytes  = (Get-Item $logPath).Length
+                }
+            }
+            $concat = ($entries | ForEach-Object { $_.sha256 }) -join ""
+            $rootHash = ([BitConverter]::ToString(
+                [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+                    [System.Text.Encoding]::UTF8.GetBytes($concat)
+                )
+            ) -replace '-', '').ToLower()
+        }
+
         $manifest = [PSCustomObject]@{
             schema        = "audit-evidence/1"
             audit_id      = (Split-Path $AuditPath -Leaf)
@@ -1908,7 +1929,6 @@ function New-EvidenceManifest {
 
         $manifestPath = Join-Path $AuditPath "MANIFEST_EVIDENCIA.json"
         $manifest | ConvertTo-Json -Depth 4 | Out-File -FilePath $manifestPath -Encoding UTF8
-        Write-AuditLog "[EVIDENCIA] Manifiesto con $($entries.Count) ficheros, root SHA-256 $rootHash" -Level INFO
         return $manifest
     } catch {
         Write-AuditLog "Error al generar el manifiesto de evidencia: $($_.Exception.Message)" -Level ERROR
@@ -2246,6 +2266,19 @@ function Invoke-DetectionSelfTest {
     $results += Check -Suite "Dedup" -Case "misma deteccion dos veces" -Expected $true -Actual ($Global:ThreatsDetected.Count -eq 1)
     $results += Check -Suite "Signature" -Case "firma estable sin PID" -Expected $true -Actual ($Global:ThreatsDetected[0].Signature -match '^[0-9a-f]{16}$')
     $results += Check -Suite "MitreFields" -Case "amenaza con tecnica MITRE" -Expected $true -Actual ($Global:ThreatsDetected[0].MitreTechnique -eq 'T1547.001')
+
+    # --- 8. Manifiesto de evidencia: el root hash debe ser reproducible ---
+    $tmp = Join-Path $env:TEMP ("selftest-evidencia-" + [guid]::NewGuid().ToString())
+    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+    "evidencia de prueba" | Out-File (Join-Path $tmp "RESUMEN_EJECUTIVO.txt") -Encoding UTF8
+    $man = New-EvidenceManifest -AuditPath $tmp
+    $results += Check -Suite "Evidencia" -Case "root SHA-256 de 64 hex" -Expected $true -Actual ($man.root_sha256 -match '^[0-9a-f]{64}$')
+    $results += Check -Suite "Evidencia" -Case "ficheros declarados" -Expected $true -Actual ($man.file_count -eq 1)
+    $hash1 = $man.root_sha256
+    "evidencia de prueba editada" | Out-File (Join-Path $tmp "RESUMEN_EJECUTIVO.txt") -Encoding UTF8
+    $man2 = New-EvidenceManifest -AuditPath $tmp
+    $results += Check -Suite "Evidencia" -Case "root cambia al editar un fichero" -Expected $true -Actual ($man2.root_sha256 -ne $hash1)
+    Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 
     # --- Informe ---
     $failed = $results | Where-Object { -not $_.Pass }

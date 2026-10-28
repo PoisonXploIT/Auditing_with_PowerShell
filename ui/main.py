@@ -15,13 +15,14 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -232,6 +233,7 @@ def _startup_baseline() -> None:
     db.init_db()
     auth.init_auth()
     auth.bootstrap_admin()
+    auth.purge_trail()
     for folder in _audit_folders():
         try:
             db.ingest_audit(folder)
@@ -432,6 +434,24 @@ def get_sla():
     return db.sla_report()
 
 
+@app.post("/api/sla/alert")
+def sla_alert(request: Request):
+    """Notificar los hallazgos con SLA vencido a Splunk HEC.
+
+    Un SLA que nadie notifica es un SLA que nadie cumple: el vencimiento queda
+    enterrado en la baseline hasta que alguien abre la consola.
+    """
+    report = db.sla_report()
+    count = report.get("overdue", 0)
+    result = integrations.push_sla_alert(report)
+    auth.record_event(
+        getattr(request.state, "user", {}).get("username"),
+        "sla_alert",
+        f"{count} vencidos -> {'ok' if result['ok'] else 'fallido'}",
+    )
+    return {"overdue": count, **result}
+
+
 class SlaRequest(BaseModel):
     sla_days: Optional[int] = None
 
@@ -550,6 +570,19 @@ def _attachment(filename: str) -> dict:
     return {"Content-Disposition": f'attachment; filename="{filename}"'}
 
 
+def _signed_response(audit_id: str, filename: str, content: bytes, media_type: str):
+    """Guardar el export en .exports/, firmarlo y devolverlo con su hash.
+
+    El header X-Content-Sha256 permite comprobar la integridad de la descarga sin
+    confiar en el sidecar; el sidecar permite verificar la firma dias depois.
+    """
+    record = evidence.signed_export(audit_id, filename, content)
+    headers = _attachment(record["path"].name)
+    headers["X-Content-Sha256"] = record["record"]["sha256"]
+    headers["X-Content-Signed"] = "true" if record["record"].get("signed") else "false"
+    return Response(content=content, media_type=media_type, headers=headers)
+
+
 @app.get("/api/audits/{audit_id}/download/json")
 def download_audit_json(audit_id: str):
     folder = _safe_audit_dir(audit_id)
@@ -565,10 +598,11 @@ def download_audit_json(audit_id: str):
         "generado": datetime.now().isoformat(),
         "auditoria": meta,
     }
-    return JSONResponse(
-        content=payload,
-        media_type="application/json; charset=utf-8",
-        headers=_attachment(f"{audit_id}.json"),
+    return _signed_response(
+        audit_id,
+        f"{audit_id}.json",
+        json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8"),
+        "application/json; charset=utf-8",
     )
 
 
@@ -597,10 +631,11 @@ def download_audit_csv(audit_id: str):
                 t.get("mitre_tactic", ""),
             ]
         )
-    return Response(
-        content="\ufeff" + buf.getvalue(),
-        media_type="text/csv; charset=utf-8",
-        headers=_attachment(f"{audit_id}_amenazas.csv"),
+    return _signed_response(
+        audit_id,
+        f"{audit_id}_amenazas.csv",
+        ("\ufeff" + buf.getvalue()).encode("utf-8"),
+        "text/csv; charset=utf-8",
     )
 
 
@@ -664,10 +699,11 @@ def download_audit_log(audit_id: str):
         )
 
     content = "\n".join(json.dumps(e, ensure_ascii=False) for e in events) + "\n"
-    return Response(
-        content=content,
-        media_type="application/x-ndjson; charset=utf-8",
-        headers=_attachment(f"{audit_id}_unified.jsonl"),
+    return _signed_response(
+        audit_id,
+        f"{audit_id}_unified.jsonl",
+        content.encode("utf-8"),
+        "application/x-ndjson; charset=utf-8",
     )
 
 
@@ -734,10 +770,23 @@ def download_audit_pdf(audit_id: str):
         line = f"[{t.get('severity', '-')}] {t.get('type', '-')} - {t.get('description', '')}"
         pdf.multi_cell(0, 5, latin(line), new_x="LMARGIN", new_y="NEXT")
 
-    return Response(
-        content=bytes(pdf.output()),
-        media_type="application/pdf",
-        headers=_attachment(f"{audit_id}_reporte.pdf"),
+    manifest = evidence.load_manifest(folder) or evidence.build_manifest(folder)
+    root = manifest.get("root_sha256", "-")
+    sig = evidence.sign_payload(root.encode("utf-8"))
+
+    pdf.ln(4)
+    pdf.set_font("Helvetica", "", 8)
+    pdf.cell(0, 5, latin(f"Evidencia: {manifest.get('file_count', 0)} ficheros, root SHA-256 {root}"), new_x="LMARGIN", new_y="NEXT")
+    if sig.get("signed"):
+        pdf.cell(0, 5, latin(f"Firma HMAC-SHA256 de la evidencia: {sig['signature']}"), new_x="LMARGIN", new_y="NEXT")
+    else:
+        pdf.cell(0, 5, latin("Informe no firmado: AUDIT_SIGN_KEY no definida en el entorno"), new_x="LMARGIN", new_y="NEXT")
+
+    return _signed_response(
+        audit_id,
+        f"{audit_id}_reporte.pdf",
+        bytes(pdf.output()),
+        "application/pdf",
     )
 
 
@@ -961,6 +1010,39 @@ def get_run_status(run_id: str):
                 pass
 
     return {"run_id": run_id, "status": status, "finished": finished}
+
+
+@app.get("/api/runs/{run_id}/stream")
+def stream_run(run_id: str):
+    """Progreso en tiempo real por SSE.
+
+    El polling cada 700 ms es un apaño: genera una peticion por tick aunque no haya
+    cambio. SSE emite solo cuando el estado cambia y cierra cuando termina la run.
+    """
+    with RUNS_LOCK:
+        if run_id not in RUNS:
+            raise HTTPException(status_code=404, detail="Ejecucion no encontrada")
+
+    def generator():
+        last = None
+        # Cap de seguridad: si el proceso queda colgado, la conexion no vive indefinidamente.
+        for _ in range(1200):
+            data = get_run_status(run_id)
+            snapshot = json.dumps(data, ensure_ascii=False)
+            if snapshot != last:
+                last = snapshot
+                yield f"data: {snapshot}\n\n"
+            if data["finished"]:
+                yield "event: end\ndata: {}\n\n"
+                return
+            time.sleep(0.5)
+        yield "event: timeout\ndata: {}\n\n"
+
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/runs")
@@ -1193,9 +1275,37 @@ def admin_revoke_session(token: str, request: Request):
 
 
 @app.get("/api/admin/trail")
-def admin_trail(request: Request, limit: int = 100):
+def admin_trail(request: Request, limit: int = 100, user: str = "", action: str = "", since: str = "", until: str = ""):
     _require_admin(request)
-    return {"trail": auth.trail(limit)}
+    return {
+        "trail": auth.trail(limit, username=user or None, action=action or None, since=since or None, until=until or None),
+        "actions": auth.trail_actions(),
+        "stats": auth.trail_stats(),
+    }
+
+
+@app.get("/api/admin/trail/export")
+def admin_trail_export(request: Request, format: str = "csv", user: str = "", action: str = "", since: str = "", until: str = ""):
+    """Exportar el registro de actividad. Sin esto, el trail se consulta pero no se
+    conserva fuera de la consola: no sirve para una auditoria externa."""
+    _require_admin(request)
+    rows = auth.trail(5000, username=user or None, action=action or None, since=since or None, until=until or None)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if format == "json":
+        return JSONResponse(
+            {"generated_at": datetime.now().isoformat(), "count": len(rows), "trail": rows},
+            headers=_attachment(f"audit_trail_{stamp}.json"),
+        )
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["at", "username", "action", "detail", "ip"])
+    for r in rows:
+        writer.writerow([r["at"], r["username"] or "", r["action"], r["detail"] or "", r["ip"] or ""])
+    return Response(
+        content=buf.getvalue().encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers=_attachment(f"audit_trail_{stamp}.csv"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1301,6 +1411,25 @@ def audit_coverage(audit_id: str):
         "declared_gaps": build_audit_meta(folder)["coverage_gaps"],
         "gap_vs_target": integrations.coverage_gap(layer, integrations.TARGET_TECHNIQUES),
     }
+
+
+@app.get("/api/exports")
+def list_exports():
+    """Exports generados por la consola y su estado de firma."""
+    root = evidence._export_root()
+    if not root.exists():
+        return {"exports": []}
+    items = []
+    for path in sorted(root.glob("*")):
+        if path.suffix == ".sig" or not path.is_file():
+            continue
+        items.append({"file": path.name, "bytes": path.stat().st_size, **evidence.verify_signed_export(path.name)})
+    return {"exports": items}
+
+
+@app.get("/api/exports/{filename}/verify")
+def verify_export(filename: str):
+    return evidence.verify_signed_export(filename)
 
 
 # ---------------------------------------------------------------------------

@@ -176,13 +176,13 @@ def splunk_event(audit_meta: dict[str, Any], threats: list[dict[str, Any]]) -> d
     return event
 
 
-def push_to_splunk(audit_meta: dict[str, Any], threats: list[dict[str, Any]], timeout: int = 10) -> dict[str, Any]:
+def _post_hec(event: dict[str, Any], timeout: int = 10) -> dict[str, Any]:
     url = _env("SPLUNK_HEC_URL")
     token = _env("SPLUNK_HEC_TOKEN")
     if not url or not token:
         return {"ok": False, "reason": "SPLUNK_HEC_URL o SPLUNK_HEC_TOKEN no definidos en el entorno"}
 
-    payload = json.dumps(splunk_event(audit_meta, threats)).encode("utf-8")
+    payload = json.dumps(event).encode("utf-8")
     try:
         req = urllib.request.Request(
             url.rstrip("/") + "/services/collector/event",
@@ -204,6 +204,10 @@ def push_to_splunk(audit_meta: dict[str, Any], threats: list[dict[str, Any]], ti
         if "certificate" in str(exc).lower() and not _env("SPLUNK_HEC_INSECURE"):
             reason += ". Si Splunk es local con certificado autofirmado, define SPLUNK_HEC_INSECURE=1"
         return {"ok": False, "reason": reason}
+
+
+def push_to_splunk(audit_meta: dict[str, Any], threats: list[dict[str, Any]], timeout: int = 10) -> dict[str, Any]:
+    return _post_hec(splunk_event(audit_meta, threats), timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +236,53 @@ def navigator_layer(name: str, threats: list[dict[str, Any]]) -> dict[str, Any]:
         "techniques": sorted(scores.values(), key=lambda x: (-x["score"], x["techniqueID"])),
     }
     return layer
+
+
+def _overdue_items(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """sla_report() devuelve 'overdue' como contador y 'overdue_list' como detalle."""
+    items = report.get("overdue_list")
+    if isinstance(items, list):
+        return items
+    raw = report.get("overdue")
+    return raw if isinstance(raw, list) else []
+
+
+def sla_alert_event(report: dict[str, Any]) -> dict[str, Any]:
+    """Evento de alerta para hallazgos con SLA vencido.
+
+    Un SLA que nadie notifica es un SLA que nadie cumple: el vencimiento queda
+    enterrado en la baseline hasta que alguien abre la consola.
+    """
+    event: dict[str, Any] = {
+        "time": datetime.now().timestamp(),
+        "source": "Invoke-SecurityAudit",
+        "sourcetype": "audit:sla",
+        "event": {
+            "alert": "sla_overdue",
+            "overdue_count": len(_overdue_items(report)),
+            "by_severity": {s: b["overdue"] for s, b in report.get("by_severity", {}).items() if b.get("overdue")},
+            "details": [
+                {
+                    "signature": o.get("signature"),
+                    "type": o.get("type"),
+                    "severity": o.get("severity"),
+                    "due_at": o.get("due_at"),
+                    "days_overdue": o.get("days_overdue"),
+                }
+                for o in _overdue_items(report)
+            ],
+        },
+    }
+    index = _env("SPLUNK_HEC_INDEX")
+    if index:
+        event["index"] = index
+    return event
+
+
+def push_sla_alert(report: dict[str, Any]) -> dict[str, Any]:
+    if not _overdue_items(report):
+        return {"ok": True, "reason": "No hay hallazgos con SLA vencido: no hay nada que notificar"}
+    return _post_hec(sla_alert_event(report))
 
 
 def coverage_gap(layer: dict[str, Any], known_techniques: list[str]) -> list[str]:

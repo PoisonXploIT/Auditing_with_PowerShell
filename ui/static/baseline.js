@@ -34,8 +34,11 @@ async function renderBaseline() {
       )
       .join("");
 
-    const rows = (threats.threats || [])
-      .map((t) => {
+    const allThreats = threats.threats || [];
+    const PAGE_SIZE = 25;
+    state.threatPage = state.threatPage || 1;
+
+    const threatRow = (t) => {
         const sev = (t.severity || "LOW").toUpperCase();
         const mitre = t.mitre_technique
           ? '<a href="' + esc(t.mitre_url) + '" target="_blank" rel="noopener noreferrer">' + esc(t.mitre_technique) + "</a>"
@@ -65,8 +68,7 @@ async function renderBaseline() {
           '<td><select class="select mono" data-sig="' + esc(t.signature) + '" data-note="' + esc(t.note || "") + '">' + opts + "</select></td>" +
           "</tr>"
         );
-      })
-      .join("");
+      };
 
     const series = (base.series || [])
       .map(
@@ -137,8 +139,10 @@ async function renderBaseline() {
       '<span class="card-sub">Cada fila es una firma unica; cambiar el estado alimenta el triage</span></div>' +
       '<div class="table-wrap"><table>' +
       "<thead><tr><th>Hallazgo</th><th>Severidad</th><th>Ocurrencias</th><th>Primera vez</th><th>Ultima vez</th><th>Vencimiento</th><th>MITRE</th><th>Estado</th></tr></thead>" +
-      "<tbody>" + (rows || '<tr><td colspan="8" class="text-muted">Sin hallazgos indexados. Ejecute una auditoria.</td></tr>') + "</tbody>" +
-      "</table></div></div>" +
+      '<tbody id="threat-body"></tbody>' +
+      "</table></div>" +
+      '<div class="pagination" id="threat-pagination"></div>' +
+      "</div>" +
       '<div class="card" style="margin-top:18px">' +
       '<div class="card-head"><span class="card-title">SLA por severidad</span>' +
       '<span class="card-sub">Plazo desde la primera aparicion hasta que alguien lo tria</span></div>' +
@@ -151,6 +155,9 @@ async function renderBaseline() {
           "<thead><tr><th>Hallazgo vencido</th><th>Severidad</th><th>Vencia</th><th>Dias</th><th>Ocurrencias</th></tr></thead>" +
           "<tbody>" + overdueRows + "</tbody></table></div>"
         : '<div class="text-muted">Ningun hallazgo abierto ha superado su plazo.</div>') +
+      '<div class="flex" style="gap:8px;margin-top:12px">' +
+      '<button class="btn btn-ghost" id="btn-sla-alert">Notificar vencidos a Splunk</button>' +
+      '<span class="text-muted" id="sla-alert-result"></span>' +
       "</div>" +
       '<div class="card" style="margin-top:18px">' +
       '<div class="card-head"><span class="card-title">Allowlist derivada del triage</span>' +
@@ -165,18 +172,43 @@ async function renderBaseline() {
       "<thead><tr><th>Auditoria</th><th>Inicio</th><th>Duracion</th><th>Amenazas</th><th>Suprimidas</th><th>Riesgo</th></tr></thead>" +
       "<tbody>" + series + "</tbody></table></div></div>";
 
-    el.querySelectorAll("select[data-sig]").forEach((sel) => {
-      sel.addEventListener("change", async () => {
-        try {
-          await api("/api/threats/" + encodeURIComponent(sel.dataset.sig) + "/status", {
-            method: "PATCH",
-            body: JSON.stringify({ status: sel.value, note: sel.dataset.note || "" }),
-          });
-          toast("Hallazgo marcado como " + STATUS_LABELS[sel.value], "success");
-        } catch (e) {
-          toast("No se pudo actualizar el estado: " + e.message, "error");
-        }
+    // Paginacion real: 300 hallazgos en una sola tabla son ilegibles en movil y
+    // dificiles de triar. Se corta por paginas y se re-renderiza el tbody.
+    const body = el.querySelector("#threat-body");
+    const pager = el.querySelector("#threat-pagination");
+    const totalPages = Math.max(1, Math.ceil(allThreats.length / PAGE_SIZE));
+    state.threatPage = Math.min(Math.max(1, state.threatPage), totalPages);
+
+    function renderThreatPage(page) {
+      state.threatPage = page;
+      const slice = allThreats.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+      body.innerHTML = slice.length
+        ? slice.map(threatRow).join("")
+        : '<tr><td colspan="8" class="text-muted">Sin hallazgos en esta pagina.</td></tr>';
+      pager.innerHTML =
+        '<button data-page="prev" ' + (page === 1 ? "disabled" : "") + ' aria-label="Pagina anterior">Anterior</button>' +
+        '<span class="page-info">Pagina ' + page + " de " + totalPages + " · " + allThreats.length + " hallazgos</span>" +
+        '<button data-page="next" ' + (page === totalPages ? "disabled" : "") + ' aria-label="Pagina siguiente">Siguiente</button>';
+      body.querySelectorAll("select[data-sig]").forEach((sel) => {
+        sel.addEventListener("change", async () => {
+          try {
+            await api("/api/threats/" + encodeURIComponent(sel.dataset.sig) + "/status", {
+              method: "PATCH",
+              body: JSON.stringify({ status: sel.value, note: sel.dataset.note || "" }),
+            });
+            toast("Estado actualizado", "success");
+            renderBaseline();
+          } catch (e) {
+            toast("No se pudo cambiar el estado: " + e.message, "error");
+          }
+        });
       });
+    }
+    renderThreatPage(state.threatPage);
+    pager.addEventListener("click", (e) => {
+      const dir = e.target.dataset.page;
+      if (!dir || e.target.disabled) return;
+      renderThreatPage(dir === "prev" ? state.threatPage - 1 : state.threatPage + 1);
     });
 
     el.querySelectorAll("button[data-del]").forEach((btn) => {
@@ -202,6 +234,22 @@ async function renderBaseline() {
           renderBaseline();
         } catch (e) {
           statusEl.textContent = "Error: " + e.message;
+        }
+      });
+    }
+
+    const slaAlert = el.querySelector("#btn-sla-alert");
+    if (slaAlert) {
+      slaAlert.addEventListener("click", async () => {
+        const out = el.querySelector("#sla-alert-result");
+        out.textContent = "Notificando...";
+        try {
+          const r = await api("/api/sla/alert", { method: "POST" });
+          out.textContent = r.ok
+            ? r.overdue + " hallazgos vencidos enviados a Splunk"
+            : "No enviado: " + r.reason;
+        } catch (e) {
+          out.textContent = "Error: " + e.message;
         }
       });
     }

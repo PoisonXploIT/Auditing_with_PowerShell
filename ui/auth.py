@@ -257,13 +257,72 @@ def record_event(username: Optional[str], action: str, detail: str = "", ip: str
         )
 
 
-def trail(limit: int = 100) -> list[dict[str, Any]]:
+def trail(
+    limit: int = 100,
+    username: Optional[str] = None,
+    action: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Registro de actividad con filtros. Sin filtros es el mismo comportamiento anterior."""
+    clauses, params = [], []
+    if username:
+        clauses.append("username = ?")
+        params.append(username)
+    if action:
+        clauses.append("action = ?")
+        params.append(action)
+    if since:
+        clauses.append("at >= ?")
+        params.append(since)
+    if until:
+        clauses.append("at <= ?")
+        params.append(until)
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    params.append(max(1, min(limit, 5000)))
     with db.connect() as conn:
         rows = conn.execute(
-            "SELECT id, at, username, action, detail, ip FROM audit_trail ORDER BY id DESC LIMIT ?",
-            (limit,),
+            f"SELECT id, at, username, action, detail, ip FROM audit_trail{where} "
+            "ORDER BY id DESC LIMIT ?",
+            params,
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def trail_actions() -> list[str]:
+    """Acciones presentes en el registro, para el filtro de la consola."""
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT action, COUNT(*) AS n FROM audit_trail GROUP BY action ORDER BY n DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def purge_trail(days: Optional[int] = None) -> int:
+    """Retencion del registro. AUDIT_TRAIL_RETENTION_DAYS (default 90); 0 = no purgar.
+
+    Un trail indefinido es un problema de minimizacion de datos: guarda nombres,
+    IPs y detalles de triage indefinidamente si nadie lo poda.
+    """
+    if days is None:
+        raw = os.environ.get("AUDIT_TRAIL_RETENTION_DAYS", "90")
+        try:
+            days = int(raw)
+        except ValueError:
+            days = 90
+    if days <= 0:
+        return 0
+    cutoff = _fmt(_now() - timedelta(days=days))
+    with db.connect() as conn:
+        cur = conn.execute("DELETE FROM audit_trail WHERE at < ?", (cutoff,))
+        return cur.rowcount
+
+
+def trail_stats() -> dict[str, Any]:
+    with db.connect() as conn:
+        total = conn.execute("SELECT COUNT(*) AS c FROM audit_trail").fetchone()["c"]
+        oldest = conn.execute("SELECT MIN(at) AS a FROM audit_trail").fetchone()["a"]
+    return {"total": total, "oldest": oldest, "retention_days": os.environ.get("AUDIT_TRAIL_RETENTION_DAYS", "90")}
 
 
 def bootstrap_admin() -> Optional[dict[str, Any]]:

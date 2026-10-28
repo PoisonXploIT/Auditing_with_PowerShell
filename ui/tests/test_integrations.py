@@ -118,6 +118,32 @@ class IntegrationTests(unittest.TestCase):
         self.assertIsNone(enriched["enrichment"])
         self.assertIn("VIRUSTOTAL_API_KEY", enriched["enrichment_note"])
 
+    def test_alerta_sla_sin_vencidos_no_envia_nada(self):
+        os.environ["SPLUNK_HEC_URL"] = "http://127.0.0.1:8088"
+        os.environ["SPLUNK_HEC_TOKEN"] = "token"
+        try:
+            result = integrations.push_sla_alert({"overdue": []})
+            self.assertTrue(result["ok"])
+            self.assertIn("no hay nada", result["reason"].lower())
+        finally:
+            os.environ.pop("SPLUNK_HEC_URL")
+            os.environ.pop("SPLUNK_HEC_TOKEN")
+
+    def test_evento_sla_con_vencidos(self):
+        report = {
+            "overdue": [
+                {"signature": "ABC", "type": "Run Key sospechoso", "severity": "HIGH",
+                 "due_at": "2026-01-04 00:00:00", "days_overdue": 12}
+            ],
+            "by_severity": {"HIGH": {"open": 1, "overdue": 1, "sla_days": 3}},
+        }
+        event = integrations.sla_alert_event(report)
+        self.assertEqual(event["sourcetype"], "audit:sla")
+        self.assertEqual(event["event"]["alert"], "sla_overdue")
+        self.assertEqual(event["event"]["overdue_count"], 1)
+        self.assertEqual(event["event"]["by_severity"], {"HIGH": 1})
+        self.assertEqual(event["event"]["details"][0]["days_overdue"], 12)
+
     def test_splunk_usa_autenticacion_splunk_no_bearer(self):
         """Splunk HEC rechaza 'Bearer <token>' (401). Solo acepta 'Splunk <token>'."""
         captured = {}

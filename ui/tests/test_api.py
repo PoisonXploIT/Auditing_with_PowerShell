@@ -109,6 +109,17 @@ class ApiTests(unittest.TestCase):
         r = client.get("/api/threats?overdue=true")
         self.assertEqual(len(r.json()["threats"]), 1)
 
+    def test_alerta_sla_sin_splunk_configurado(self):
+        _seed_threat()
+        os.environ.pop("SPLUNK_HEC_URL", None)
+        os.environ.pop("SPLUNK_HEC_TOKEN", None)
+        r = client.post("/api/sla/alert")
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data["overdue"], 1)
+        self.assertFalse(data["ok"])
+        self.assertIn("SPLUNK_HEC", data["reason"])
+
     def test_status_triage_y_allowlist(self):
         _seed_threat()
         r = client.patch(
@@ -215,6 +226,98 @@ class EvidenceApiTests(unittest.TestCase):
     def test_audit_id_inexistente(self):
         self.assertEqual(client.get("/api/audits/Auditoria_NO_EXISTE/manifest").status_code, 404)
         self.assertEqual(client.get("/api/audits/../etc/manifest").status_code, 404)
+
+
+class TrailAndExportTests(unittest.TestCase):
+    """Registro de actividad filtrado/exportado y firma de los exports."""
+
+    FIXTURE = Path(__file__).resolve().parent / "fixtures"
+
+    def setUp(self):
+        client.cookies.clear()
+        _login()
+        self._original = main.RESULTS_DIR
+        main.RESULTS_DIR = self.FIXTURE
+        os.environ["AUDIT_EXPORT_DIR"] = str(Path(tempfile.mkdtemp()) / "exports")
+
+    def tearDown(self):
+        main.RESULTS_DIR = self._original
+        os.environ.pop("AUDIT_EXPORT_DIR", None)
+
+    def test_stream_sse_emite_y_cierra(self):
+        run_id = "test-run-sse"
+        main.RUNS_DIR = Path(tempfile.mkdtemp())
+        (main.RUNS_DIR / f"{run_id}.json").write_text(json.dumps({"phase": "done", "percent": 100}), encoding="utf-8")
+        with main.RUNS_LOCK:
+            main.RUNS[run_id] = {"process": type("P", (), {"poll": lambda self: 0})(), "started_at": "x"}
+        try:
+            r = client.get(f"/api/runs/{run_id}/stream")
+            self.assertEqual(r.status_code, 200)
+            self.assertIn("text/event-stream", r.headers["content-type"])
+            self.assertIn('"phase": "done"', r.text)
+            self.assertIn("event: end", r.text)
+        finally:
+            with main.RUNS_LOCK:
+                main.RUNS.pop(run_id, None)
+
+    def test_stream_sse_run_inexistente(self):
+        self.assertEqual(client.get("/api/runs/no-existe/stream").status_code, 404)
+
+    def test_trail_filtra_por_accion(self):
+        auth.record_event("sammi", "triage", "cambio de estado")
+        auth.record_event("sammi", "splunk_push", "envio")
+        r = client.get("/api/admin/trail?action=triage")
+        self.assertEqual(r.status_code, 200)
+        actions = {t["action"] for t in r.json()["trail"]}
+        self.assertEqual(actions, {"triage"})
+        self.assertIn("triage", [a["action"] for a in r.json()["actions"]])
+
+    def test_trail_export_csv(self):
+        auth.record_event("sammi", "audit_run", "ejecucion")
+        r = client.get("/api/admin/trail/export?format=csv&action=audit_run")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("text/csv", r.headers["content-type"])
+        self.assertIn("audit_run", r.text)
+        self.assertIn("at,username,action,detail,ip", r.text)
+
+    def test_trail_retencion_purga_lo_antiguo(self):
+        os.environ["AUDIT_TRAIL_RETENTION_DAYS"] = "30"
+        auth.record_event("sammi", "audit_run", "reciente")
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT INTO audit_trail (at, username, action, detail, ip) VALUES (?, ?, ?, ?, ?)",
+                ("2020-01-01 00:00:00", "sammi", "audit_run", "antiguo", ""),
+            )
+        purged = auth.purge_trail()
+        self.assertEqual(purged, 1)
+        with db.connect() as conn:
+            old = conn.execute("SELECT COUNT(*) AS c FROM audit_trail WHERE at < '2021-01-01'").fetchone()["c"]
+        self.assertEqual(old, 0)
+        os.environ.pop("AUDIT_TRAIL_RETENTION_DAYS")
+
+    def test_export_se_firma_y_verifica(self):
+        os.environ["AUDIT_SIGN_KEY"] = "clave-de-prueba"
+        try:
+            r = client.get("/api/audits/Auditoria_SAMPLE/download/csv")
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.headers["x-content-signed"], "true")
+            listing = client.get("/api/exports").json()["exports"]
+            self.assertTrue(listing)
+            verify = client.get("/api/exports/" + listing[0]["file"] + "/verify").json()
+            self.assertTrue(verify["ok"])
+            self.assertEqual(verify["status"], "verificado")
+        finally:
+            os.environ.pop("AUDIT_SIGN_KEY")
+
+    def test_export_sin_clave_no_finge_firma(self):
+        os.environ.pop("AUDIT_SIGN_KEY", None)
+        r = client.get("/api/audits/Auditoria_SAMPLE/download/pdf")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers["x-content-signed"], "false")
+        listing = client.get("/api/exports").json()["exports"]
+        pdf = [e for e in listing if e["file"].endswith(".pdf")][0]
+        self.assertFalse(pdf["signed"])
+        self.assertEqual(pdf["status"], "verificado")
 
 
 if __name__ == "__main__":

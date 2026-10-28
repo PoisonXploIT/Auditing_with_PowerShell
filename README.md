@@ -696,8 +696,49 @@ este en la allowlist, y `python` en 8502 no autoriza cualquier puerto.
 
 ```powershell
 .\Invoke-SecurityAudit.ps1 -SelfTest
-# SELFTEST DE DETECCION: 108 casos, 108 OK, 0 FALLIDOS
+# SELFTEST DE DETECCION: 111 casos, 111 OK, 0 FALLIDOS
 ```
+
+### Registro de actividad: filtros, retencion y exportacion
+
+El trail se registraba pero no se podia usar. Ahora:
+
+```text
+GET /api/admin/trail?action=triage&user=sammi&since=2026-10-01
+GET /api/admin/trail/export?format=csv|json   (respeta los mismos filtros)
+```
+
+La retencion se controla con `AUDIT_TRAIL_RETENTION_DAYS` (90 por defecto; `0` desactiva
+la purga). Un trail indefinido es un problema de minimizacion de datos: guarda nombres,
+IPs y detalles de triage para siempre si nadie lo poda.
+
+### Exports firmados
+
+Cada descarga (JSON, CSV, JSONL, PDF) se escribe en `.exports/` y genera un sidecar
+`.sig` con su SHA-256 y, si `AUDIT_SIGN_KEY` esta definida, su HMAC-SHA256.
+
+```text
+GET /api/exports                      -> listado con estado de verificacion
+GET /api/exports/{file}/verify        -> integro / alterado / firma_invalida
+```
+
+El PDF lleva en el pie la root SHA-256 de la evidencia y la firma, o la advertencia
+"Informe no firmado" si no hay clave. Los exports van a `.exports/` a proposito: si se
+metieran en la carpeta de la auditoria, el manifiesto los marcaria como no declarados.
+
+### Notificacion de SLA vencido
+
+```text
+POST /api/sla/alert   -> evento audit:sla a Splunk HEC con los hallazgos vencidos
+```
+
+Un SLA que nadie notifica es un SLA que nadie cumple.
+
+### Progreso en tiempo real (SSE)
+
+`GET /api/runs/{id}/stream` emite el estado solo cuando cambia y cierra al terminar.
+El polling cada 700 ms sigue disponible como fallback si el navegador o un proxy no
+soportan `EventSource`.
 
 ---
 

@@ -95,7 +95,8 @@ async function renderAdmin() {
     const trailRows = (trail.trail || [])
       .map((t) =>
         "<tr><td class=\"mono\">" + esc(t.at) + "</td><td class=\"mono\">" + esc(t.username || "-") +
-        "</td><td class=\"mono\">" + esc(t.action) + "</td><td>" + esc(t.detail || "") + "</td></tr>"
+        "</td><td class=\"mono\">" + esc(t.action) + "</td><td>" + esc(t.detail || "") +
+        "</td><td class=\"mono\">" + esc(t.ip || "-") + "</td></tr>"
       )
       .join("");
 
@@ -128,11 +129,56 @@ async function renderAdmin() {
       "</table></div></div>" +
       '<div class="card" style="margin-top:18px">' +
       '<div class="card-head"><span class="card-title">Registro de actividad</span>' +
-      '<span class="card-sub">Quien ejecuto que, cuando y desde que IP</span></div>' +
+      '<span class="card-sub">Quien ejecuto que, cuando y desde que IP · retencion ' + esc(trail.stats.retention_days) + ' dias</span></div>' +
+      '<div class="flex" style="gap:8px;margin-bottom:10px;flex-wrap:wrap">' +
+      '<select class="select mono" id="trail-action"><option value="">todas las acciones</option>' +
+      (trail.actions || []).map((a) => '<option value="' + esc(a.action) + '">' + esc(a.action) + ' (' + a.n + ')</option>').join("") +
+      "</select>" +
+      '<input class="input mono" id="trail-user" placeholder="usuario" />' +
+      '<input class="input mono" id="trail-since" placeholder="desde YYYY-MM-DD" />' +
+      '<button class="btn btn-ghost" id="trail-filter">Filtrar</button>' +
+      '<a class="btn btn-ghost" id="trail-csv" href="#">Exportar CSV</a>' +
+      '<a class="btn btn-ghost" id="trail-json" href="#">Exportar JSON</a>' +
+      '<span class="text-muted" id="trail-count">' + (trail.trail || []).length + " eventos</span>" +
+      "</div>" +
       '<div class="table-wrap"><table>' +
-      "<thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th><th>Detalle</th></tr></thead>" +
-      "<tbody>" + (trailRows || '<tr><td colspan="4" class="text-muted">Sin eventos registrados.</td></tr>') + "</tbody>" +
+      "<thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th><th>Detalle</th><th>IP</th></tr></thead>" +
+      "<tbody id=\"view-trail-body\">" + (trailRows || '<tr><td colspan="5" class="text-muted">Sin eventos registrados.</td></tr>') + "</tbody>" +
       "</table></div></div>";
+
+    const trailQuery = () => {
+      const p = new URLSearchParams();
+      const action = document.getElementById("trail-action").value;
+      const user = document.getElementById("trail-user").value.trim();
+      const since = document.getElementById("trail-since").value.trim();
+      if (action) p.set("action", action);
+      if (user) p.set("user", user);
+      if (since) p.set("since", since);
+      return p.toString();
+    };
+
+    document.getElementById("trail-filter").addEventListener("click", async () => {
+      try {
+        const t = await api("/api/admin/trail?limit=200&" + trailQuery());
+        const rows = (t.trail || []).map((x) =>
+          "<tr><td class=\"mono\">" + esc(x.at) + "</td><td class=\"mono\">" + esc(x.username || "-") +
+          "</td><td class=\"mono\">" + esc(x.action) + "</td><td>" + esc(x.detail || "") +
+          "</td><td class=\"mono\">" + esc(x.ip || "-") + "</td></tr>"
+        ).join("");
+        el.querySelector("#trail-count").textContent = (t.trail || []).length + " eventos";
+        el.querySelector("#view-trail-body").innerHTML = rows || '<tr><td colspan="5" class="text-muted">Ningun evento coincide con el filtro.</td></tr>';
+      } catch (e) {
+        toast("No se pudo filtrar el registro: " + e.message, "error");
+      }
+    });
+    document.getElementById("trail-csv").addEventListener("click", (e) => {
+      e.preventDefault();
+      window.location = "/api/admin/trail/export?format=csv&" + trailQuery();
+    });
+    document.getElementById("trail-json").addEventListener("click", (e) => {
+      e.preventDefault();
+      window.location = "/api/admin/trail/export?format=json&" + trailQuery();
+    });
 
     el.querySelector("#btn-logout").addEventListener("click", async () => {
       try {

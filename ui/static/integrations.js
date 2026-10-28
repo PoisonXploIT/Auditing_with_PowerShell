@@ -16,6 +16,7 @@ async function renderIntegrations() {
     let iocBlock = '<div class="text-muted">Selecciona una auditoria para extraer sus indicadores.</div>';
     let navBlock = "";
     let integrityBlock = "";
+    let exportBlock = "";
 
     if (auditId) {
       const iocs = await api("/api/audits/" + encodeURIComponent(auditId) + "/iocs");
@@ -56,6 +57,20 @@ async function renderIntegrations() {
             verify.mismatches.map((m) => '<tr><td class="mono">' + esc(m.path) + "</td><td>" + esc(m.problem) + "</td></tr>").join("") +
             "</tbody></table></div>"
           : "");
+
+      const exports = await api("/api/exports");
+      const exportRows = (exports.exports || [])
+        .map((e) =>
+          "<tr><td class=\"mono\">" + esc(e.file) + "</td><td class=\"num\">" + e.bytes + "</td>" +
+          '<td class="mono">' + esc((e.sha256 || "-").slice(0, 16)) + "</td>" +
+          '<td class="badge ' + (e.signed ? "low" : "medium") + '">' + (e.signed ? "firmado" : "sin firma") + "</td>" +
+          '<td class="mono">' + esc(e.status) + "</td></tr>"
+        )
+        .join("");
+      exportBlock =
+        '<div class="table-wrap"><table><thead><tr><th>Fichero</th><th>Bytes</th><th>SHA-256</th><th>Firma</th><th>Verificacion</th></tr></thead><tbody>' +
+        (exportRows || '<tr><td colspan="5" class="text-muted">Aun no se ha descargado ningun export.</td></tr>') +
+        "</tbody></table></div>";
     }
 
     el.innerHTML =
@@ -75,6 +90,10 @@ async function renderIntegrations() {
       '<div class="card-head"><span class="card-title">Integridad de la evidencia</span>' +
       '<span class="card-sub">SHA-256 de cada fichero declarado en MANIFEST_EVIDENCIA.json</span></div>' +
       (integrityBlock || '<div class="text-muted">Sin auditoria seleccionada.</div>') + "</div>" +
+      '<div class="card" style="margin-top:18px">' +
+      '<div class="card-head"><span class="card-title">Exports firmados</span>' +
+      '<span class="card-sub">Cada descarga se guarda en .exports/ con su sidecar .sig</span></div>' +
+      exportBlock + "</div>" +
       '<div class="card" style="margin-top:18px">' +
       '<div class="card-head"><span class="card-title">Salidas</span>' +
       '<span class="card-sub">Capa del Navigator para abrirla en attack.mitre.org y envio al collector</span></div>' +

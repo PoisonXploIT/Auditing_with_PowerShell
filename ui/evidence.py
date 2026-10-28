@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -133,7 +134,11 @@ def verify_manifest(folder: Path) -> dict[str, Any]:
 def sign_payload(payload: bytes) -> dict[str, Any]:
     key = _sign_key()
     if not key:
-        return {"signed": False, "reason": "AUDIT_SIGN_KEY no definida en el entorno"}
+        return {
+            "signed": False,
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "reason": "AUDIT_SIGN_KEY no definida en el entorno: se puede comprobar el hash, no la autenticidad",
+        }
     return {
         "signed": True,
         "algorithm": "HMAC-SHA256",
@@ -151,3 +156,92 @@ def export_signature(folder: Path, filename: str) -> dict[str, Any]:
     result["file"] = filename
     result["bytes"] = path.stat().st_size
     return result
+
+
+def write_export_signature(folder: Path, filename: str) -> dict[str, Any]:
+    """Escribir el sidecar <filename>.sig con el hash y la firma del export.
+
+    Un PDF que se descarga sin firma se puede falsificar igual que el JSON original.
+    El sidecar permite verificar el fichero fuera de la consola.
+    """
+    path = folder / filename
+    if not path.exists():
+        return {"ok": False, "reason": f"{filename} no existe en la auditoria"}
+    payload = path.read_bytes()
+    sig = sign_payload(payload)
+    record = {
+        "schema": "audit-export/1",
+        "file": filename,
+        "bytes": len(payload),
+        "signed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        **sig,
+    }
+    (folder / (filename + ".sig")).write_text(json.dumps(record, indent=2), encoding="utf-8")
+    return record
+
+
+EXPORT_DIR_NAME = ".exports"
+
+
+def _export_root() -> Path:
+    default = Path(__file__).resolve().parent.parent / EXPORT_DIR_NAME
+    return Path(os.environ.get("AUDIT_EXPORT_DIR", str(default)))
+
+
+def signed_export(audit_id: str, filename: str, content: bytes) -> dict[str, Any]:
+    """Escribir un export fuera de la carpeta de evidencia y firmarlo.
+
+    Los exports van a .exports/ a proposito: son derivados, no evidencia original.
+    Si se metieran en la carpeta de la auditoria, el manifiesto los marcaria como
+    ficheros no declarados y la verificacion de integridad perderia sentido.
+    """
+    root = _export_root()
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / f"{audit_id}_{filename}"
+    path.write_bytes(content)
+    record = {
+        "schema": "audit-export/1",
+        "file": path.name,
+        "bytes": len(content),
+        "signed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        **sign_payload(content),
+    }
+    (root / (path.name + ".sig")).write_text(json.dumps(record, indent=2), encoding="utf-8")
+    return {"path": path, "record": record}
+
+
+def verify_signed_export(filename: str) -> dict[str, Any]:
+    """Comparar un export descargado contra su sidecar .sig."""
+    root = _export_root()
+    path = root / filename
+    sidecar = root / (filename + ".sig")
+    if not path.exists():
+        return {"ok": False, "status": "ausente", "reason": f"{filename} no existe en .exports/"}
+    if not sidecar.exists():
+        return {
+            "ok": True,
+            "status": "sin_firma",
+            "reason": "Este export no tiene sidecar .sig: no se puede verificar su autenticidad.",
+            "sha256": sha256_file(path),
+        }
+    try:
+        record = json.loads(sidecar.read_text(encoding="utf-8-sig"))
+    except (json.JSONDecodeError, OSError):
+        return {"ok": False, "status": "sidecar_invalido", "reason": "El .sig no es JSON valido"}
+
+    actual = sha256_file(path)
+    if record.get("sha256") != actual:
+        return {"ok": False, "status": "alterado", "reason": "El fichero no coincide con su firma", "sha256": actual}
+
+    key = _sign_key()
+    if record.get("signed") and key:
+        expected = hmac.new(key.encode("utf-8"), path.read_bytes(), hashlib.sha256).hexdigest()
+        if expected != record.get("signature"):
+            return {"ok": False, "status": "firma_invalida", "reason": "La firma no corresponde con la clave del entorno"}
+    return {
+        "ok": True,
+        "status": "verificado",
+        "sha256": actual,
+        "signed": record.get("signed"),
+        "signed_at": record.get("signed_at"),
+    }
