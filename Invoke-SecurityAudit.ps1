@@ -166,31 +166,26 @@ $Global:MitreMap = @{
 # modo que la supresion es auditable (aparece en el resumen y en el log).
 # Regla: una entrada debe nombrar Process o Ports; la supresion se limita a los
 # ThreatTypes listados, nunca a todo lo que haga ese proceso.
+# Regla 2: una regla con puertos que no estan en $Global:SuspiciousPorts es INERTE, porque
+# la alarma nunca existe. No es inocua: da una falsa sensacion de cobertura. Get-AllowlistRuleHealth
+# lo detecta y lo declara en el resumen.
+# Regla 3: una regla justificada por "escucha en loopback" es redundante: el detector ya
+# ignora 127.0.0.1. Si el servicio acaba escuchando en 0.0.0.0, eso es un hallazgo real y
+# la regla lo ocultaria. Por eso solo se mantienen reglas que pueden dispararse.
 $Global:Allowlist = @(
-    @{ Id = "ui-audit-local"; ThreatTypes = @("Conexion a puerto sospechoso", "Puerto sospechoso en escucha")
-       Ports = @(8501, 8502); Process = "python"
-       Reason = "UI de esta auditoria (uvicorn en 127.0.0.1:8502) y su backend local" }
     @{ Id = "splunk-local"; ThreatTypes = @("Puerto sospechoso en escucha")
-       Ports = @(8088, 8089, 9997, 9999); Process = "splunkd"
-       Reason = "Splunk Enterprise local: 8088/9999 son Splunk Web y su API, no un C2" }
+       Ports = @(9999); Process = "splunkd"
+       Reason = "Splunk Web local en 9999: no es un C2. 8088/8089/9997 no se alertan, no necesitan regla" }
     @{ Id = "node-dev"; ThreatTypes = @("Puerto sospechoso en escucha")
-       Ports = @(8080, 3080); Process = "node"
-       Reason = "Servidores de desarrollo Node/agent-browser en loopback" }
-    @{ Id = "tailscale"; ThreatTypes = @("Puerto sospechoso en escucha")
-       Ports = @(80); Process = "tailscaled"
-       Reason = "Overlay Tailscale; escucha en la interfaz tailscale0, no en la LAN" }
-    @{ Id = "syncthing"; ThreatTypes = @("Puerto sospechoso en escucha")
-       Ports = @(8384, 22000); Process = "syncthing"
-       Reason = "Sincronizacion de carpetas (WinGet), puertos oficiales de syncthing" }
+       Ports = @(8080); Process = "node"
+       Reason = "Servidor de desarrollo Node en 8080 (agent-browser, Opervanta, Piloop)" }
     @{ Id = "git-bash"; ThreatTypes = @("Uso sospechoso de LOLBAS", "Comando codificado", "Patron malicioso detectado")
        Process = "bash"
-       Reason = 'Git Bash: su bash -c con grep -E disparaba el patron de comando codificado' }
+       ExcludePattern = "-enc|certutil|powershell|pwsh"
+       Reason = 'Git Bash: su bash -c con grep -E disparaba el patron de comando codificado. No tapa un -enc real' }
     @{ Id = "agent-tools"; ThreatTypes = @("Proceso sin ruta")
        Process = "agent-browser"
-       Reason = "Herramientas de agentes locales en AppData\\Local\\hermes (binario sin ruta legible sin elevacion)" }
-    @{ Id = "postgres-dev"; ThreatTypes = @("Puerto sospechoso en escucha")
-       Ports = @(5432, 5433, 5434, 6432); Process = "postgres"
-       Reason = "PostgreSQL/pgbouncer/traefik de desarrollo local" }
+       Reason = "Herramientas de agentes locales en AppData\Local\hermes (binario sin ruta legible sin elevacion)" }
 )
 
 # Amenazas suprimidas por la allowlist (se declaran en el resumen: no se ocultan).
@@ -464,6 +459,14 @@ function Test-AllowedByAllowlist {
     foreach ($entry in $Global:Allowlist) {
         if ($entry.ThreatTypes -and $ThreatType -notin $entry.ThreatTypes) { continue }
 
+        # ExcludePattern: la regla no puede tapar un caso concreto. Git Bash puede ser
+        # ruido legitimo, pero 'bash -c "powershell -enc ..."' no se suprime.
+        if ($entry.ExcludePattern) {
+            $cmd = ""
+            try { $cmd = [string]$Details.CommandLine } catch { $cmd = "" }
+            if ($cmd -and ($cmd -match $entry.ExcludePattern)) { continue }
+        }
+
         $nameMatch = $true
         if ($entry.Process) {
             $p = ([string]$entry.Process).ToLower()
@@ -511,6 +514,35 @@ function Get-AllowlistImpact {
     return $impact
 }
 
+# Salud de la regla: una entrada cuyo puerto no esta en la lista de deteccion nunca
+# puede dispararse. No es inocua: ocupa espacio, sugiere cobertura que no existe y
+# tapa la posibilidad de que ese puerto se alerte en el futuro.
+function Get-AllowlistRuleHealth {
+    param([array]$Rules = $null)
+    if (-not $Rules) { $Rules = $Global:Allowlist }
+    $health = @()
+    foreach ($rule in $Rules) {
+        $detectable = @()
+        if ($rule.Ports) {
+            foreach ($p in $rule.Ports) {
+                if ($Global:SuspiciousPorts -contains $p) { $detectable += $p }
+            }
+        }
+        $estado = "activable"
+        if (-not $rule.Process -and -not $rule.Ports) {
+            $estado = "invalida: sin Process ni Ports"
+        } elseif ($rule.Ports -and $detectable.Count -eq 0) {
+            $estado = "inerte: ningun puerto de la regla esta en la lista de deteccion"
+        }
+        $health += [PSCustomObject]@{
+            Id                = $rule.Id
+            Estado            = $estado
+            PuertosDetectables = ($detectable -join ", ")
+        }
+    }
+    return $health
+}
+
 # Fusiona una allowlist externa (JSON) con la built-in.
 function Load-ExternalAllowlist {
     param([string]$Path)
@@ -534,6 +566,7 @@ function Load-ExternalAllowlist {
                 Process     = [string]$e.Process
                 Path        = [string]$e.Path
                 Reason      = if ($e.Reason) { [string]$e.Reason } else { "allowlist externa" }
+                ExcludePattern = if ($e.ExcludePattern) { [string]$e.ExcludePattern } else { "" }
             }
             $Global:Allowlist += $entry
             $added++
@@ -1803,9 +1836,13 @@ function New-ExecutiveSummary {
             "" | Out-File $summaryPath -Append -Encoding UTF8
             $sumSup = ($impact | Measure-Object -Property Suppressed -Sum).Sum
             $vacias = @($impact | Where-Object { $_.Suppressed -eq 0 }).Count
-            "Reglas: $($impact.Count) | Detecciones suprimidas: $sumSup | Reglas sin efecto: $vacias" | Out-File $summaryPath -Append -Encoding UTF8
+            $health = Get-AllowlistRuleHealth
+            $inertes = @($health | Where-Object { $_.Estado -ne "activable" }).Count
+            "Reglas: $($impact.Count) | Detecciones suprimidas: $sumSup | Reglas sin efecto: $vacias | Reglas inerte por construccion: $inertes" | Out-File $summaryPath -Append -Encoding UTF8
             foreach ($i in $impact) {
-                "  - $($i.Id): suprime $($i.Suppressed); si se elimina reaparecen $($i.ReapareceSiSeElimina) [tipos: $($i.ThreatTypes)]" | Out-File $summaryPath -Append -Encoding UTF8
+                $h = $health | Where-Object { $_.Id -eq $i.Id }
+                $tag = if ($h) { $h.Estado } else { "activable" }
+                "  - $($i.Id): suprime $($i.Suppressed); si se elimina reaparecen $($i.ReapareceSiSeElimina) [tipos: $($i.ThreatTypes)] ($tag)" | Out-File $summaryPath -Append -Encoding UTF8
             }
             "" | Out-File $summaryPath -Append -Encoding UTF8
         }
@@ -2264,7 +2301,9 @@ function Invoke-DetectionSelfTest {
     $allowCases = @(
         @{ Type = "Puerto sospechoso en escucha"; Details = [PSCustomObject]@{ ProcessName = 'splunkd'; LocalPort = 9999; LocalAddress = '0.0.0.0' }; Expected = $true }
         @{ Type = "Puerto sospechoso en escucha"; Details = [PSCustomObject]@{ ProcessName = 'unknownsvc'; LocalPort = 4444; LocalAddress = '0.0.0.0' }; Expected = $false }
-        @{ Type = "Comando codificado"; Details = [PSCustomObject]@{ Name = 'bash'; CommandLine = 'bash -c "powershell -enc AAAA"' }; Expected = $true }
+        @{ Type = "Puerto sospechoso en escucha"; Details = [PSCustomObject]@{ ProcessName = 'splunkd'; LocalPort = 8088; LocalAddress = '0.0.0.0' }; Expected = $false; Why = '8088 no esta en la lista de deteccion: no hay alarma que suprimir' }
+        @{ Type = "Comando codificado"; Details = [PSCustomObject]@{ Name = 'bash'; CommandLine = 'bash -c "grep -E pattern file"' }; Expected = $true }
+        @{ Type = "Comando codificado"; Details = [PSCustomObject]@{ Name = 'bash'; CommandLine = 'bash -c "powershell -enc AAAA"' }; Expected = $false; Why = 'ExcludePattern: un -enc dentro de bash NO se suprime' }
         @{ Type = "Comando codificado"; Details = [PSCustomObject]@{ Name = 'powershell'; CommandLine = 'powershell -enc AAAA' }; Expected = $false }
         @{ Type = "Proceso sin ruta"; Details = [PSCustomObject]@{ Name = 'agent-browser-win32-x64' }; Expected = $true }
         @{ Type = "Proceso sin ruta"; Details = [PSCustomObject]@{ Name = 'svchost' }; Expected = $false }
@@ -2274,6 +2313,16 @@ function Invoke-DetectionSelfTest {
         $label = $c.Type + " / " + (($c.Details.ProcessName + $c.Details.Name + " port " + $c.Details.LocalPort).Trim())
         $results += Check -Suite "Allowlist" -Case $label -Expected $c.Expected -Actual $hit
     }
+
+    # --- 6a2. Salud de la allowlist: una regla cuyo puerto no se detecta es inerte ---
+    $health = Get-AllowlistRuleHealth
+    foreach ($h in $health) {
+        $results += Check -Suite "AllowlistHealth" -Case "$($h.Id) activable" -Expected $true -Actual ($h.Estado -eq "activable")
+    }
+    $inerte = Get-AllowlistRuleHealth -Rules @(@{ Id = "regla-fantasma"; ThreatTypes = @("Puerto sospechoso en escucha"); Ports = @(8384); Process = "syncthing" })
+    $results += Check -Suite "AllowlistHealth" -Case "puerto fuera de la lista de deteccion = regla inerte" -Expected $true -Actual ($inerte[0].Estado -match "inerte")
+    $sinpuertos = Get-AllowlistRuleHealth -Rules @(@{ Id = "proceso-solo"; ThreatTypes = @("Proceso sin ruta"); Process = "agent-browser" })
+    $results += Check -Suite "AllowlistHealth" -Case "regla solo por proceso es activable" -Expected $true -Actual ($sinpuertos[0].Estado -eq "activable")
 
     # --- 6b. Reglas derivadas del triage (-AllowlistPath) deben valer por si solas ---
     if ($AllowlistPath) {
@@ -2318,8 +2367,9 @@ function Invoke-DetectionSelfTest {
     # --- 6c. Ruido: falsos positivos reales que NO deben disparar, y control de
     #           sobre-supresion (una regla no puede tapar todo lo que hace ese proceso).
     $noiseCases = @(
-        @{ Type = "Puerto sospechoso en escucha"; Details = [PSCustomObject]@{ ProcessName = 'python'; LocalPort = 8502; LocalAddress = '127.0.0.1' }; Expected = $true;  Why = 'uvicorn de la propia consola' }
-        @{ Type = "Puerto sospechoso en escucha"; Details = [PSCustomObject]@{ ProcessName = 'python'; LocalPort = 4444; LocalAddress = '0.0.0.0' }; Expected = $false; Why = 'el mismo proceso no justifica cualquier puerto' }
+        @{ Type = "Puerto sospechoso en escucha"; Details = [PSCustomObject]@{ ProcessName = 'python'; LocalPort = 8502; LocalAddress = '127.0.0.1' }; Expected = $false; Why = '8502 no esta en la lista de deteccion: no hace falta una regla, el detector ya lo ignora' }
+        @{ Type = "Puerto sospechoso en escucha"; Details = [PSCustomObject]@{ ProcessName = 'node'; LocalPort = 8080; LocalAddress = '0.0.0.0' }; Expected = $true;  Why = 'servidor Node de desarrollo (Piloop/Opervanta) en 8080' }
+        @{ Type = "Puerto sospechoso en escucha"; Details = [PSCustomObject]@{ ProcessName = 'node'; LocalPort = 4444; LocalAddress = '0.0.0.0' }; Expected = $false; Why = 'el mismo proceso no justifica cualquier puerto' }
         @{ Type = "Comando codificado"; Details = [PSCustomObject]@{ Name = 'bash'; CommandLine = 'bash -c "ls"' }; Expected = $true;  Why = 'Git Bash invoking a plain command' }
         @{ Type = "Uso sospechoso de LOLBAS"; Details = [PSCustomObject]@{ Name = 'certutil'; CommandLine = 'certutil -encode file.txt' }; Expected = $false; Why = 'certutil sigue siendo LOLBAS aunque el proceso este en allowlist' }
         @{ Type = "Proceso sin ruta"; Details = [PSCustomObject]@{ Name = 'agent-browser-win32-x64' }; Expected = $true;  Why = 'binario de agente local sin ruta legible' }

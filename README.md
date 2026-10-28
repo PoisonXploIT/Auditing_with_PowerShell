@@ -450,11 +450,24 @@ Get-ChildItem -Path "Auditoria_*" -Filter "*.json" -Recurse | ForEach-Object {
 ### Allowlist (`-AllowlistPath`)
 
 El ruido hace inservible un informe. El script trae una allowlist built-in con la
-justificación de cada entrada (Splunk Web en 9999, Git Bash, Tailscale, syncthing,
-Node de desarrollo, PostgreSQL local). Cada supresión se **declara** en el resumen
+justificación de cada entrada (Splunk Web en 9999, Node de desarrollo, Git Bash,
+binarios de agente sin ruta). Cada supresión se **declara** en el resumen
 ejecutivo y en `auditoria.log`; no se silencia.
 
-Una entrada suprime solo los `ThreatTypes` listados, nunca todo lo que haga el proceso:
+Tres condiciones de validez, verificadas por el propio script:
+
+1. **La regla tiene que poder dispararse.** Una entrada con puertos que no están en
+   `$Global:SuspiciousPorts` es inerte: la alarma nunca existe, así que la regla no
+   hace nada y solo ocupa espacio en el informe. `Get-AllowlistRuleHealth` lo detecta
+   y lo declara. Por eso se han eliminado `ui-audit-local` (8501/8502), `tailscale`
+   (80), `syncthing` (8384/22000) y `postgres-dev` (5432...): el detector ya ignora
+   esos puertos, no hacen falta.
+2. **Una regla justificada por "escucha en loopback" es redundante.** El detector solo
+   alerta cuando el puerto escucha en `0.0.0.0`. Si un servicio acaba escuchando en la
+   LAN, eso es un hallazgo real y una regla de ese tipo lo ocultaría.
+3. **Una regla no puede tapar todo lo que hace ese proceso.** Se limita a los
+   `ThreatTypes` listados y, si se declara `excludePattern`, no suprime los casos que
+   coincidan con ese patrón.
 
 ```json
 {
@@ -462,9 +475,16 @@ Una entrada suprime solo los `ThreatTypes` listados, nunca todo lo que haga el p
     {
       "id": "splunk-local",
       "threatTypes": ["Puerto sospechoso en escucha"],
-      "ports": [8088, 8089, 9997, 9999],
+      "ports": [9999],
       "process": "splunkd",
-      "reason": "Splunk Web y su API, no un C2"
+      "reason": "Splunk Web local, no un C2"
+    },
+    {
+      "id": "git-bash",
+      "threatTypes": ["Comando codificado", "Uso sospechoso de LOLBAS"],
+      "process": "bash",
+      "excludePattern": "-enc|certutil|powershell|pwsh",
+      "reason": "Git Bash de desarrollo; un -enc dentro de bash sigue siendo sospechoso"
     }
   ]
 }
@@ -476,6 +496,13 @@ Una entrada suprime solo los `ThreatTypes` listados, nunca todo lo que haga el p
 
 La allowlist externa se **fusiona** con la built-in (no la sustituye). Una entrada debe
 definir al menos `process` o `ports`.
+
+Para entornos con agentes (Piloop, Opervanta) la regla útil es la de proceso, no la de
+puerto: `agent-browser` aparece como "Proceso sin ruta" porque su binario en
+`AppData\Local\hermes` no tiene ruta legible sin elevación. Los servicios de esos
+stacks (uvicorn, Node, HEC de Splunk) corren en loopback, y el detector ya los ignora:
+no necesitan entrada. Añadirlos sería una regla inerte, y una regla inerte en un entorno
+que cambia de proceso cada semana es cobertura falsa.
 
 ### Impacto medido de cada regla (`Get-AllowlistImpact`)
 
