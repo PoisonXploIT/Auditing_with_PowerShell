@@ -359,6 +359,44 @@ class TrailAndExportTests(unittest.TestCase):
         self.assertFalse(pdf["signed"])
         self.assertEqual(pdf["status"], "verificado")
 
+    def test_pdf_incluye_hash_del_cuerpo_y_declara_verificacion_externa(self):
+        """El pie del PDF lleva el SHA-256 del cuerpo y dice donde se verifica el
+        documento completo. Un PDF no puede contener su propio hash: el pie forma
+        parte del documento, por eso se imprime el hash del cuerpo y la firma del
+        fichero entero queda en el sidecar .sig.
+        """
+        import hashlib
+        import re
+        import zlib
+
+        def pdf_text(data: bytes) -> str:
+            chunks = []
+            for match in re.finditer(rb"stream\r?\n(.*?)endstream", data, re.DOTALL):
+                raw = match.group(1)
+                try:
+                    raw = zlib.decompress(raw)
+                except zlib.error:
+                    pass
+                chunks.append(raw.decode("latin-1", "replace"))
+            return " ".join(chunks)
+
+        r = client.get("/api/audits/Auditoria_SAMPLE/download/pdf")
+        self.assertEqual(r.status_code, 200)
+        body_hash = r.headers.get("x-body-sha256", "")
+        self.assertEqual(len(body_hash), 64)
+        self.assertTrue(re.fullmatch(r"[0-9a-f]{64}", body_hash))
+
+        text = pdf_text(r.content)
+        self.assertIn(body_hash, text)
+        self.assertIn("Cuerpo del informe", text)
+        self.assertIn("verificacion externa", text)
+        # El hash impreso es del cuerpo, no del fichero completo: no debe coincidir.
+        self.assertNotEqual(body_hash, hashlib.sha256(r.content).hexdigest())
+        # Y el hash del fichero completo si coincide con el sidecar.
+        listing = client.get("/api/exports").json()["exports"]
+        pdf = [e for e in listing if e["file"].endswith(".pdf")][0]
+        self.assertEqual(pdf["sha256"], hashlib.sha256(r.content).hexdigest())
+
 
 if __name__ == "__main__":
     unittest.main()

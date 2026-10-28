@@ -8,6 +8,7 @@ con progreso en vivo a traves del script PowerShell en modo headless.
 
 import base64
 import csv
+import hashlib
 import hmac
 import io
 import json
@@ -721,76 +722,96 @@ def download_audit_pdf(audit_id: str):
     recs = parse_recommendations(folder / "RESUMEN_EJECUTIVO.txt")
     s = meta.get("summary") or {}
     counts = meta.get("severity_counts") or {}
+    generated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     def latin(v) -> str:
         return str(v).encode("latin-1", "replace").decode("latin-1")
 
-    pdf = FPDF(format="A4")
-    pdf.set_auto_page_break(True, margin=15)
-    pdf.add_page()
+    def render(footer_lines: list[str]) -> bytes:
+        """Renderizar el informe. El pie se pasa como argumento para poder calcular
+        el hash del cuerpo antes de escribirlo: un documento no puede contener su
+        propio hash completo, porque el pie forma parte del documento.
+        """
+        pdf = FPDF(format="A4")
+        pdf.set_auto_page_break(True, margin=15)
+        pdf.add_page()
 
-    pdf.set_font("Helvetica", "B", 18)
-    pdf.cell(0, 10, latin("Auditoria de Seguridad Empresarial"), new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 6, latin(audit_id), new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 6, latin(f"Generado: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"), new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(4)
-
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 8, latin("Resumen"), new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("Helvetica", "", 10)
-    for label, key in (
-        ("Sistema", "sistema"),
-        ("Usuario", "usuario"),
-        ("Privilegios", "privilegios"),
-        ("Fecha inicio", "fecha_inicio"),
-        ("Duracion", "duracion"),
-        ("Modulos", "modulos"),
-    ):
-        pdf.cell(0, 6, latin(f"{label}: {s.get(key, '-')}"), new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 6, latin(f"Nivel de riesgo: {meta.get('risk_level', '-')}"), new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(2)
-
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 8, latin("Amenazas por severidad"), new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("Helvetica", "", 10)
-    for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
-        pdf.cell(0, 6, latin(f"{sev}: {counts.get(sev, 0)}"), new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(2)
-
-    if recs:
-        pdf.set_font("Helvetica", "B", 12)
-        pdf.cell(0, 8, latin("Recomendaciones"), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "B", 18)
+        pdf.cell(0, 10, latin("Auditoria de Seguridad Empresarial"), new_x="LMARGIN", new_y="NEXT")
         pdf.set_font("Helvetica", "", 10)
-        for i, r in enumerate(recs, 1):
-            pdf.multi_cell(0, 5, latin(f"{i}. {r}"), new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 6, latin(audit_id), new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 6, latin(f"Generado: {generated}"), new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(4)
+
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 8, latin("Resumen"), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "", 10)
+        for label, key in (
+            ("Sistema", "sistema"),
+            ("Usuario", "usuario"),
+            ("Privilegios", "privilegios"),
+            ("Fecha inicio", "fecha_inicio"),
+            ("Duracion", "duracion"),
+            ("Modulos", "modulos"),
+        ):
+            pdf.cell(0, 6, latin(f"{label}: {s.get(key, '-')}"), new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 6, latin(f"Nivel de riesgo: {meta.get('risk_level', '-')}"), new_x="LMARGIN", new_y="NEXT")
         pdf.ln(2)
 
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 8, latin(f"Amenazas detectadas ({len(threats)})"), new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("Courier", "", 9)
-    for t in threats:
-        line = f"[{t.get('severity', '-')}] {t.get('type', '-')} - {t.get('description', '')}"
-        pdf.multi_cell(0, 5, latin(line), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 8, latin("Amenazas por severidad"), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "", 10)
+        for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+            pdf.cell(0, 6, latin(f"{sev}: {counts.get(sev, 0)}"), new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(2)
+
+        if recs:
+            pdf.set_font("Helvetica", "B", 12)
+            pdf.cell(0, 8, latin("Recomendaciones"), new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font("Helvetica", "", 10)
+            for i, r in enumerate(recs, 1):
+                pdf.multi_cell(0, 5, latin(f"{i}. {r}"), new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(2)
+
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 8, latin(f"Amenazas detectadas ({len(threats)})"), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Courier", "", 9)
+        for t in threats:
+            line = f"[{t.get('severity', '-')}] {t.get('type', '-')} - {t.get('description', '')}"
+            pdf.multi_cell(0, 5, latin(line), new_x="LMARGIN", new_y="NEXT")
+
+        if footer_lines:
+            pdf.ln(4)
+            pdf.set_font("Helvetica", "", 8)
+            for line in footer_lines:
+                pdf.cell(0, 5, latin(line), new_x="LMARGIN", new_y="NEXT")
+        return bytes(pdf.output())
 
     manifest = evidence.load_manifest(folder) or evidence.build_manifest(folder)
     root = manifest.get("root_sha256", "-")
     sig = evidence.sign_payload(root.encode("utf-8"))
+    body_hash = hashlib.sha256(render([])).hexdigest()
 
-    pdf.ln(4)
-    pdf.set_font("Helvetica", "", 8)
-    pdf.cell(0, 5, latin(f"Evidencia: {manifest.get('file_count', 0)} ficheros, root SHA-256 {root}"), new_x="LMARGIN", new_y="NEXT")
+    footer = [
+        f"Evidencia: {manifest.get('file_count', 0)} ficheros, root SHA-256 {root}",
+        f"Cuerpo del informe (sin este pie): SHA-256 {body_hash}",
+    ]
     if sig.get("signed"):
-        pdf.cell(0, 5, latin(f"Firma HMAC-SHA256 de la evidencia: {sig['signature']}"), new_x="LMARGIN", new_y="NEXT")
+        footer.append(f"Firma HMAC-SHA256 de la evidencia: {sig['signature']}")
     else:
-        pdf.cell(0, 5, latin("Informe no firmado: AUDIT_SIGN_KEY no definida en el entorno"), new_x="LMARGIN", new_y="NEXT")
-
-    return _signed_response(
-        audit_id,
-        f"{audit_id}_reporte.pdf",
-        bytes(pdf.output()),
-        "application/pdf",
+        footer.append("Informe no firmado: AUDIT_SIGN_KEY no definida en el entorno")
+    footer.append(
+        "El SHA-256 del PDF completo no esta aqui: se verifica contra el sidecar "
+        "<nombre>.pdf.sig en .exports/ (verificacion externa)."
     )
+
+    content = render(footer)
+    record = evidence.signed_export(audit_id, f"{audit_id}_reporte.pdf", content)
+    headers = _attachment(record["path"].name)
+    headers["X-Content-Sha256"] = record["record"]["sha256"]
+    headers["X-Content-Signed"] = "true" if record["record"].get("signed") else "false"
+    headers["X-Body-Sha256"] = body_hash
+    return Response(content=content, media_type="application/pdf", headers=headers)
 
 
 def parse_suppressed(path: Path) -> list:

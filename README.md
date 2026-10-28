@@ -747,9 +747,12 @@ GET /api/exports                      -> listado con estado de verificacion
 GET /api/exports/{file}/verify        -> integro / alterado / firma_invalida
 ```
 
-El PDF lleva en el pie la root SHA-256 de la evidencia y la firma, o la advertencia
-"Informe no firmado" si no hay clave. Los exports van a `.exports/` a proposito: si se
-metieran en la carpeta de la auditoria, el manifiesto los marcaria como no declarados.
+El PDF lleva en el pie la root SHA-256 de la evidencia, el **SHA-256 del cuerpo del
+informe** (renderizado antes de añadir el pie) y la firma de la evidencia, o la
+advertencia "Informe no firmado" si no hay clave. El hash del PDF completo no puede
+imprimirse dentro del propio PDF: el pie forma parte del documento, así que la
+integridad del fichero entero se verifica contra el sidecar `.sig` (verificación
+externa). El header `X-Body-Sha256` devuelve el mismo hash del cuerpo.
 
 ### Notificacion de SLA vencido
 
