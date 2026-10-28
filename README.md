@@ -818,30 +818,66 @@ Un SLA que nadie notifica es un SLA que nadie cumple.
 
 ### Adaptador al SOC de Opervanta (escrito, apagado)
 
-`ui/opervanta_soc.py` implementa el contrato del SOC: `PILOOP_SOC_DIR`,
-`eventos.jsonl` y severidades info/baja/media/alta/critica.
+`ui/opervanta_soc.py` habla con el ingress real de Opervanta, no con sus ficheros:
 
 ```text
-POST /api/audits/{id}/soc   -> escribe el outbox del SOC si esta activado
-GET  /api/audits/{id}/soc   -> estado del adaptador
+POST http://127.0.0.1:8899/alerta
+  X-Piloop-Alerta-Sensor:  identidad del sensor
+  X-Piloop-Alerta-Ts:      unix seconds
+  X-Piloop-Alerta-Nonce:   un solo uso
+  X-Piloop-Alerta-Hmac:    HMAC-SHA256(secret, "v2|sensor|ts|nonce|sha256(cuerpo)")
+```
+
+```text
+POST /api/audits/{id}/soc   -> publica los hallazgos en el SOC si esta activado
+GET  /api/audits/{id}/soc   -> resultado de la publicacion
 GET  /api/integrations      -> incluye opervanta_soc
 ```
+
+Variables: `PILOOP_SOC_URL` (defecto `http://127.0.0.1:8899`), `PILOOP_SOC_SENSOR`
+(defecto `audit-powershell`), `PILOOP_SOC_ALERTA_SECRET` (si no existe, se usa el
+secreto de Opervanta: `PILOOP_ALERTA_SECRET` o `PILOOP_ALERTA_SECRETS`).
 
 Mapeo: CRITICAL a critica, HIGH a alta, MEDIUM a media, LOW a baja, y los hallazgos
 suprimidos por allowlist a info (se declaran, no se ocultan). El `event_id` sale de la
 `Signature` del hallazgo, normalizada sin PID ni marcas de tiempo, de modo que el mismo
-hallazgo en dos ejecuciones da el mismo identificador. La correlacion es el `audit_id`.
+hallazgo en dos ejecuciones da el mismo identificador; Opervanta lo usa como `firma` para
+deduplicar. La correlacion es el `audit_id`.
 
-**No se activa**: `PILOOP_SOC_ENABLED` vale 0 por defecto. Los P0 de la auditoria
-integral de Opervanta (SEC-01 autorizacion de POST, SEC-02 escape de atributos, ID-01
-ultimo administrador, DATA-01 auditoria SQLite, SOC-01 antirreplay fail-open) no estan
-cerrados, y alimentar el SOC desde una consola cuya hermana tiene esos huecos amplifica
-la superficie en lugar de reducirla. Activarlo es una decision explicita del operador:
-`setx PILOOP_SOC_ENABLED "1"` y `setx PILOOP_SOC_DIR "C:\ruta\al\soc"`.
+**Decision de diseno: no se escribe en el directorio del SOC.** Escribir
+`eventos.jsonl` a mano saltaria la autenticacion, el rate-limit por sensor, el dedupe y
+el pre-triaje de Opervanta, es decir, saltaria exactamente lo que la auditoria de
+Opervanta corrigio. Sin secreto configurado el adaptador **no envia nada** (fail closed)
+lo explica en el `reason`.
+
+**Estado de los P0 en el codigo desplegado** (`C:\Opervanta`, commit `d49c4ff`, verificado
+el 2026-10-28 en el fuente):
+
+| Hallazgo | Estado | Prueba en el codigo |
+|---|---|---|
+| SEC-01 autorizacion de POST | cerrado | `rutas.exige_permiso()` cubre `/add`, `/api/add` y `/orquestador/enviar` (`buzon/rutas.py:82-86,128,209`) |
+| SEC-02 escape de atributos | cerrado | `esc()` ahora escapa comillas (`buzon/core.py:369-375`) |
+| ID-01 ultimo administrador | cerrado | rechazo al desactivar o rebajar al ultimo admin (`buzon/roles.py:464-474,503`) |
+| DATA-01 auditoria en SQLite | cerrado | `registrar_acceso` inserta en la tabla `accesos` y `auditoria()` la lee (`buzon/roles.py:840-856`) |
+| SOC-01 antirreplay | **condicional** | el fail-closed solo se aplica si `PILOOP_ALERTA_ESTRICTO=on`; esa variable no esta definida |
+
+Por eso sigue apagado: `PILOOP_SOC_ENABLED` vale 0 por defecto. Activarlo requiere dos
+cosas, y la segunda es la que cierra el ultimo P0:
+
+```powershell
+setx PILOOP_SOC_ENABLED "1"
+setx PILOOP_SOC_URL "http://127.0.0.1:8899"
+setx PILOOP_SOC_SENSOR "audit-powershell"
+setx PILOOP_SOC_ALERTA_SECRET "<secreto generado, no escrito en ningun fichero>"
+# En Opervanta, para que el antirreplay no degrade a fail-open:
+setx PILOOP_ALERTA_ESTRICTO "1"
+```
 
 El adaptador **no envia a Splunk**: Opervanta ya tiene su cola HEC con reintentos, y
 duplicar el envio crearia dos fuentes de verdad para el mismo evento. Un test lo
-verifica sustituyendo `_post_hec` por una funcion que lanza si se llama.
+verifica sustituyendo `_post_hec` por una funcion que lanza si se llama. Los tests
+del adaptador levantan un stub del ingress que reproduce la firma v2 y el nonce de un
+solo uso; nunca tocan la instancia real.
 
 ### Progreso en tiempo real (SSE)
 

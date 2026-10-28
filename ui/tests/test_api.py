@@ -330,11 +330,11 @@ class EvidenceApiTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         data = r.json()
         self.assertFalse(data["enabled"])
-        self.assertEqual(data["written"], 0)
+        self.assertEqual(data["sent"], 0)
         self.assertGreater(data["pending"], 0)
         status = client.get("/api/integrations").json()["opervanta_soc"]
         self.assertFalse(status["enabled"])
-        self.assertIn("HEC", status["note"])
+        self.assertIn("firma v2", status["note"])
 
 
 class TrailAndExportTests(unittest.TestCase):
