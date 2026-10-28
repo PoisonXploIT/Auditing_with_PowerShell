@@ -18,7 +18,7 @@ import re
 import sqlite3
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -56,7 +56,10 @@ CREATE TABLE IF NOT EXISTS threats (
     status           TEXT NOT NULL DEFAULT 'open',
     note             TEXT,
     resolved_at      TEXT,
-    details          TEXT
+    details          TEXT,
+    sla_days         INTEGER,
+    due_at           TEXT,
+    acknowledged_at  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS allowlist (
@@ -86,6 +89,22 @@ CREATE INDEX IF NOT EXISTS idx_audit_threats_sig ON audit_threats (signature);
 
 VALID_STATUS = {"open", "investigating", "accepted", "false_positive", "resolved"}
 
+# SLA por severidad (dias). Un hallazgo abierto que no se toca mas alla de su SLA
+# esta vencido: la baseline deja de ser un inventario y pasa a tener plazos.
+SLA_DAYS = {"CRITICAL": 1, "HIGH": 3, "MEDIUM": 7, "LOW": 30}
+
+
+def _sla_due(first_seen: str, severity: str) -> str:
+    try:
+        base = datetime.strptime(first_seen, "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        base = datetime.now()
+    return (base + timedelta(days=SLA_DAYS.get(severity, 7))).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _now() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
 
 def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=10)
@@ -101,6 +120,13 @@ def init_db() -> None:
         existing = {r["name"] for r in conn.execute("PRAGMA table_info(threats)")}
         if "details" not in existing:
             conn.execute("ALTER TABLE threats ADD COLUMN details TEXT")
+        for col in ("sla_days", "due_at", "acknowledged_at"):
+            if col not in existing:
+                conn.execute(f"ALTER TABLE threats ADD COLUMN {col} INTEGER" if col == "sla_days" else f"ALTER TABLE threats ADD COLUMN {col} TEXT")
+        # Backfill para hallazgos ya indexados sin SLA.
+        conn.execute(
+            """UPDATE threats SET sla_days = NULL WHERE sla_days IS NULL"""
+        )
 
 
 def signature(threat_type: str, description: str) -> str:
@@ -248,15 +274,16 @@ def ingest_audit(folder: Path, force: bool = False) -> dict[str, int]:
                 continue
             severity = (t.get("Severity") or "LOW").upper()
             row = conn.execute(
-                "SELECT signature, occurrences, status FROM threats WHERE signature = ?", (sig,)
+                "SELECT signature, occurrences, status, first_seen FROM threats WHERE signature = ?", (sig,)
             ).fetchone()
             if row is None:
                 new_count += 1
                 conn.execute(
                     """INSERT INTO threats (signature, type, severity, description,
                                            mitre_technique, mitre_tactic, mitre_url,
-                                           first_seen, last_seen, occurrences, status, details)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'open', ?)""",
+                                           first_seen, last_seen, occurrences, status, details,
+                                           sla_days, due_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'open', ?, ?, ?)""",
                     (
                         sig,
                         t.get("ThreatType") or t.get("type") or "",
@@ -268,6 +295,8 @@ def ingest_audit(folder: Path, force: bool = False) -> dict[str, int]:
                         seen_at,
                         seen_at,
                         json.dumps(t.get("Details") or {}, ensure_ascii=False),
+                        SLA_DAYS.get(severity, 7),
+                        _sla_due(seen_at, severity),
                     ),
                 )
             else:
@@ -281,6 +310,7 @@ def ingest_audit(folder: Path, force: bool = False) -> dict[str, int]:
                     """UPDATE threats
                        SET severity = ?, last_seen = ?, occurrences = occurrences + 1,
                            type = ?, description = ?, mitre_technique = ?, mitre_tactic = ?, mitre_url = ?,
+                           sla_days = ?, due_at = ?,
                            status = CASE WHEN status = 'false_positive' THEN 'open' ELSE status END
                        WHERE signature = ?""",
                     (
@@ -291,6 +321,8 @@ def ingest_audit(folder: Path, force: bool = False) -> dict[str, int]:
                         t.get("MitreTechnique") or row["mitre_technique"],
                         t.get("MitreTactic") or row["mitre_tactic"],
                         t.get("MitreUrl") or row["mitre_url"],
+                        SLA_DAYS.get(best, 7),
+                        _sla_due(row["first_seen"], best),
                         sig,
                     ),
                 )
@@ -311,8 +343,9 @@ def ingest_audit(folder: Path, force: bool = False) -> dict[str, int]:
                 new_count += 1
                 conn.execute(
                     """INSERT INTO threats (signature, type, severity, description,
-                                           first_seen, last_seen, occurrences, status, note, details)
-                       VALUES (?, ?, ?, ?, ?, ?, 1, 'false_positive', ?, ?)""",
+                                           first_seen, last_seen, occurrences, status, note, details,
+                                           sla_days, due_at)
+                       VALUES (?, ?, ?, ?, ?, ?, 1, 'false_positive', ?, ?, ?, ?)""",
                     (
                         sig,
                         sup["type"],
@@ -322,6 +355,8 @@ def ingest_audit(folder: Path, force: bool = False) -> dict[str, int]:
                         seen_at,
                         sup.get("reason", "") + " [allowlist: " + sup.get("allowlist_id", "") + "]",
                         json.dumps(sup.get("details") or {}, ensure_ascii=False),
+                        SLA_DAYS.get(sup["severity"], 7),
+                        _sla_due(seen_at, sup["severity"]),
                     ),
                 )
             else:
@@ -399,6 +434,10 @@ def baseline() -> dict[str, Any]:
         fp = conn.execute(
             "SELECT COUNT(*) AS c FROM threats WHERE status = 'false_positive'"
         ).fetchone()["c"]
+        overdue = conn.execute(
+            "SELECT COUNT(*) AS c FROM threats WHERE status = 'open' AND due_at < ?",
+            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),),
+        ).fetchone()["c"]
         by_severity = {
             r["severity"]: r["c"]
             for r in conn.execute(
@@ -420,36 +459,120 @@ def baseline() -> dict[str, Any]:
         "open": open_count,
         "resolved": resolved,
         "false_positive": fp,
+        "overdue": overdue,
         "open_by_severity": by_severity,
         "most_repeated": [dict(r) for r in most_repeated],
         "series": [dict(r) for r in series],
     }
 
 
-def threat_list(status: Optional[str] = None, limit: int = 200) -> list[dict[str, Any]]:
+def _row_with_sla(row: sqlite3.Row, now: datetime) -> dict[str, Any]:
+    d = dict(row)
+    due = d.get("due_at")
+    if d["status"] == "open" and due:
+        due_dt = datetime.strptime(due, "%Y-%m-%d %H:%M:%S")
+        d["overdue"] = due_dt < now
+        d["days_left"] = (due_dt - now).days
+    else:
+        d["overdue"] = False
+        d["days_left"] = None
+    return d
+
+
+def threat_list(status: Optional[str] = None, limit: int = 200, overdue_only: bool = False) -> list[dict[str, Any]]:
+    now = datetime.now()
+    select = """SELECT signature, type, severity, description, mitre_technique, mitre_tactic,
+                        mitre_url, first_seen, last_seen, occurrences, status, note, resolved_at,
+                        sla_days, due_at, acknowledged_at
+               FROM threats"""
+    clauses = []
+    params: list[Any] = []
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if overdue_only:
+        clauses.append("status = 'open' AND due_at < ?")
+        params.append(now.strftime("%Y-%m-%d %H:%M:%S"))
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
     with connect() as conn:
-        if status:
-            rows = conn.execute(
-                """SELECT signature, type, severity, description, mitre_technique, mitre_tactic,
-                          mitre_url, first_seen, last_seen, occurrences, status, note, resolved_at
-                   FROM threats WHERE status = ?
-                   ORDER BY occurrences DESC, severity, last_seen DESC LIMIT ?""",
-                (status, limit),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """SELECT signature, type, severity, description, mitre_technique, mitre_tactic,
-                          mitre_url, first_seen, last_seen, occurrences, status, note, resolved_at
-                   FROM threats
-                   ORDER BY occurrences DESC, severity, last_seen DESC LIMIT ?""",
-                (limit,),
-            ).fetchall()
-    return [dict(r) for r in rows]
+        rows = conn.execute(
+            f"{select}{where} ORDER BY occurrences DESC, severity, last_seen DESC LIMIT ?",
+            params + [limit],
+        ).fetchall()
+    return [_row_with_sla(r, now) for r in rows]
+
+
+def sla_report() -> dict[str, Any]:
+    """Plazos por severidad. Sin esto la baseline es un inventario, no una gestion."""
+    now = datetime.now()
+    with connect() as conn:
+        rows = conn.execute(
+            """SELECT signature, type, severity, first_seen, last_seen, due_at, occurrences, status
+               FROM threats WHERE status = 'open'"""
+        ).fetchall()
+        closed = conn.execute(
+            """SELECT severity, AVG(julianday(resolved_at) - julianday(first_seen)) AS avg_days
+               FROM threats WHERE resolved_at IS NOT NULL AND status IN ('resolved','false_positive','accepted')
+               GROUP BY severity"""
+        ).fetchall()
+    by_severity: dict[str, dict[str, Any]] = {}
+    overdue: list[dict[str, Any]] = []
+    for r in rows:
+        sev = r["severity"] or "LOW"
+        bucket = by_severity.setdefault(sev, {"open": 0, "overdue": 0, "sla_days": SLA_DAYS.get(sev, 7), "oldest": None})
+        bucket["open"] += 1
+        due = r["due_at"]
+        if due and datetime.strptime(due, "%Y-%m-%d %H:%M:%S") < now:
+            bucket["overdue"] += 1
+            overdue.append(
+                {
+                    "signature": r["signature"],
+                    "type": r["type"],
+                    "severity": sev,
+                    "first_seen": r["first_seen"],
+                    "due_at": due,
+                    "days_overdue": (now - datetime.strptime(due, "%Y-%m-%d %H:%M:%S")).days,
+                    "occurrences": r["occurrences"],
+                }
+            )
+        if bucket["oldest"] is None or r["first_seen"] < bucket["oldest"]:
+            bucket["oldest"] = r["first_seen"]
+    overdue.sort(key=lambda x: x["days_overdue"], reverse=True)
+    return {
+        "policy": SLA_DAYS,
+        "open": sum(b["open"] for b in by_severity.values()),
+        "overdue": len(overdue),
+        "by_severity": by_severity,
+        "overdue_list": overdue,
+        "mean_days_to_close": {r["severity"]: round(r["avg_days"], 1) for r in closed if r["avg_days"] is not None},
+    }
+
+
+def set_sla(signature: str, days: Optional[int]) -> Optional[dict[str, Any]]:
+    """Sobrescribe el SLA de un hallazgo concreto (un HIGH que para el negocio es critico, etc.)."""
+    if days is not None and days <= 0:
+        raise ValueError("sla_days debe ser un entero positivo")
+    now = datetime.now()
+    with _LOCK, connect() as conn:
+        row = conn.execute("SELECT first_seen FROM threats WHERE signature = ?", (signature,)).fetchone()
+        if row is None:
+            return None
+        due = None if days is None else _sla_due(row["first_seen"], "")
+        if days is not None:
+            due = (datetime.strptime(row["first_seen"], "%Y-%m-%d %H:%M:%S") + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("UPDATE threats SET sla_days = ?, due_at = ? WHERE signature = ?", (days, due, signature))
+        r = conn.execute(
+            """SELECT signature, type, severity, first_seen, last_seen, occurrences, status, note,
+                      sla_days, due_at, acknowledged_at FROM threats WHERE signature = ?""",
+            (signature,),
+        ).fetchone()
+    return _row_with_sla(r, now)
 
 
 def set_status(signature: str, status: str, note: str = "") -> Optional[dict[str, Any]]:
     if status not in VALID_STATUS:
         raise ValueError(f"estado invalido: {status}")
+    now = datetime.now()
     with _LOCK, connect() as conn:
         row = conn.execute("SELECT signature FROM threats WHERE signature = ?", (signature,)).fetchone()
         if row is None:
@@ -457,13 +580,16 @@ def set_status(signature: str, status: str, note: str = "") -> Optional[dict[str
         conn.execute(
             """UPDATE threats SET status = ?, note = ?,
                       resolved_at = CASE WHEN ? = 'resolved' OR ? = 'false_positive'
-                                        THEN datetime('now') ELSE resolved_at END
+                                        THEN datetime('now') ELSE resolved_at END,
+                      acknowledged_at = CASE WHEN ? = 'open' THEN acknowledged_at
+                                            ELSE COALESCE(acknowledged_at, datetime('now')) END
                WHERE signature = ?""",
-            (status, note, status, status, signature),
+            (status, note, status, status, status, signature),
         )
         updated = conn.execute(
             """SELECT signature, type, severity, description, mitre_technique, mitre_tactic,
-                      mitre_url, first_seen, last_seen, occurrences, status, note, resolved_at
+                      mitre_url, first_seen, last_seen, occurrences, status, note, resolved_at,
+                      sla_days, due_at, acknowledged_at
                FROM threats WHERE signature = ?""",
             (signature,),
         ).fetchone()
@@ -477,7 +603,7 @@ def set_status(signature: str, status: str, note: str = "") -> Optional[dict[str
         entry = None
     else:
         entry = None
-    return dict(updated) | {"allowlist_entry": entry}
+    return _row_with_sla(updated, now) | {"allowlist_entry": entry}
 
 
 def _threat_details(signature: str) -> dict[str, Any]:

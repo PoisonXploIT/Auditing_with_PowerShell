@@ -416,9 +416,30 @@ def get_baseline():
 
 
 @app.get("/api/threats")
-def get_threats(status: Optional[str] = None, limit: int = 200):
-    """Hallazgos distincts con primera/ultima aparicion y numero de ocurrencias."""
-    return {"threats": db.threat_list(status=status, limit=limit)}
+def get_threats(status: Optional[str] = None, limit: int = 200, overdue: bool = False):
+    """Hallazgos distincts con primera/ultima aparicion, ocurrencias y vencimiento."""
+    return {"threats": db.threat_list(status=status, limit=limit, overdue_only=overdue)}
+
+
+@app.get("/api/sla")
+def get_sla():
+    """Plazos por severidad y hallazgos vencidos."""
+    return db.sla_report()
+
+
+class SlaRequest(BaseModel):
+    sla_days: Optional[int] = None
+
+
+@app.patch("/api/threats/{signature}/sla")
+def set_threat_sla(signature: str, req: SlaRequest):
+    try:
+        updated = db.set_sla(signature, req.sla_days)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Hallazgo no encontrado en la baseline")
+    return updated
 
 
 class StatusRequest(BaseModel):

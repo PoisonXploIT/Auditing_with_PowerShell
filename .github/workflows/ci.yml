@@ -1,0 +1,40 @@
+name: audit-selftest-and-api
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  detection-selftest:
+    # El script PowerShell es especifico de Windows: el selftest solo tiene
+    # sentido en un runner Windows.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Selftest de deteccion (sin allowlist)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File Invoke-SecurityAudit.ps1 -SelfTest
+
+      - name: Selftest con allowlist derivada del triage
+        shell: pwsh
+        run: |
+          $json = '{"entries":[{"id":"fp-ci","threatTypes":["Puerto sospechoso en escucha"],"ports":[9999],"process":"splunkd","path":"","reason":"regla de prueba"}]}'
+          Set-Content -Path allowlist_ci.json -Value $json -Encoding UTF8
+          powershell -NoProfile -ExecutionPolicy Bypass -File Invoke-SecurityAudit.ps1 -SelfTest -AllowlistPath allowlist_ci.json
+
+  api-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Dependencias
+        run: python -m pip install -r ui/requirements.txt httpx
+
+      - name: Tests de baseline y API
+        run: python -m unittest discover -s ui/tests -p "test_*.py" -v

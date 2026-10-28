@@ -195,6 +195,42 @@ class BaselineTests(unittest.TestCase):
         db.add_allowlist_entry({"threat_type": "X", "process": "node", "reason": "dev local"})
         self.assertEqual(len(db.list_allowlist()), 1)
 
+    def test_sla_computed_on_ingest(self):
+        db.ingest_audit(self.audit)
+        sig = THREATS[0]["Signature"]
+        row = [x for x in db.threat_list() if x["signature"] == sig][0]
+        self.assertEqual(row["sla_days"], db.SLA_DAYS["HIGH"])
+        self.assertEqual(row["due_at"], "2026-10-31 10:00:00")  # first_seen + 3 dias
+        self.assertFalse(row["overdue"])
+        self.assertIsNotNone(row["days_left"])
+
+    def test_overdue_reported_and_cleared_on_triage(self):
+        db.ingest_audit(self.audit)
+        sig = THREATS[0]["Signature"]
+        with db.connect() as conn:
+            conn.execute("UPDATE threats SET due_at = '2026-10-20 10:00:00' WHERE signature = ?", (sig,))
+        report = db.sla_report()
+        self.assertEqual(report["overdue"], 1)
+        self.assertEqual(report["overdue_list"][0]["signature"], sig)
+        self.assertTrue(report["overdue_list"][0]["days_overdue"] > 0)
+        self.assertEqual(len(db.threat_list(overdue_only=True)), 1)
+        # Triarlo cierra el plazo: deja de estar vencido.
+        db.set_status(sig, "investigating", "lo vemos hoy")
+        self.assertEqual(db.sla_report()["overdue"], 0)
+        self.assertEqual(len(db.threat_list(overdue_only=True)), 0)
+
+    def test_sla_override_and_validation(self):
+        db.ingest_audit(self.audit)
+        sig = THREATS[0]["Signature"]
+        updated = db.set_sla(sig, 1)
+        self.assertEqual(updated["sla_days"], 1)
+        self.assertEqual(updated["due_at"], "2026-10-29 10:00:00")
+        with self.assertRaises(ValueError):
+            db.set_sla(sig, 0)
+        cleared = db.set_sla(sig, None)
+        self.assertIsNone(cleared["sla_days"])
+        self.assertIsNone(cleared["due_at"])
+
     def test_forget_audits_removes_rows(self):
         db.ingest_audit(self.audit)
         db.forget_audits([self.audit.name])

@@ -528,7 +528,54 @@ Invoke-RestMethod -Method Patch -Uri http://127.0.0.1:8502/api/threats/<firma>/s
   -Body '{"status":"investigating","note":"revisar splunk web"}'
 ```
 
-Pruebas: `python -m unittest ui.tests.test_baseline` (8 casos, sin dependencias).
+Pruebas: `python -m unittest ui.tests.test_baseline` (15 casos, sin dependencias).
+
+### SLA por hallazgo
+
+Cada hallazgo abierto tiene un plazo desde su primera aparicion:
+
+| Severidad | SLA |
+|---|---|
+| CRITICAL | 1 dia |
+| HIGH | 3 dias |
+| MEDIUM | 7 dias |
+| LOW | 30 dias |
+
+Un hallazgo esta **vencido** si sigue `open` y su `due_at` ha pasado. Triarlo
+(`investigating`, `accepted`, `false_positive`, `resolved`) cierra el plazo.
+
+```powershell
+GET  /api/sla                        # politica, abiertos, vencidos, media de cierre
+GET  /api/threats?overdue=true       # solo los vencidos
+PATCH /api/threats/<firma>/sla       # {"sla_days": 1} sobrescribe el plazo; null lo quita
+```
+
+La pestaña **Baseline** muestra una tarjeta "SLA por severidad" y la lista de hallazgos
+vencidos con los dias de retraso. El KPI "SLA vencido" va en la cabecera.
+
+### CI
+
+`.github/workflows/ci.yml` (runner Windows, dos jobs):
+
+1. **Selftest de deteccion**: `Invoke-SecurityAudit.ps1 -SelfTest` (102 casos) y otra
+   pasada con `-AllowlistPath` para validar que las reglas derivadas del triage matchean
+   por si solas (103 casos). El script sale con codigo 1 si algun caso falla, lo que
+   rompe el build.
+2. **Tests de baseline y API**: `python -m unittest discover -s ui/tests` (35 casos:
+   baseline, triage/allowlist, SLA, endpoints, puerta CSRF).
+
+### El triage alimenta la allowlist
+
+Marcar un hallazgo como `false_positive` no es decorativo: genera una regla en la
+allowlist derivada del triage, que se escribe a `.runs/allowlist_<run>.json` y se pasa
+al script con `-AllowlistPath` en la siguiente ejecución. Reabrir el hallazgo
+(`open`, `investigating`, `accepted`, `resolved`) retira la regla.
+
+```powershell
+# Comprobar que las reglas derivadas matchean sin correr una auditoria
+.\Invoke-SecurityAudit.ps1 -SelfTest -AllowlistPath .runs\allowlist_<run>.json
+# SELFTEST DE DETECCION: 103 casos, 103 OK, 0 FALLIDOS
+```
 
 ---
 

@@ -206,6 +206,18 @@ body {
 .badge.medium { background: rgba(251, 191, 36, 0.14); color: var(--medium); }
 .badge.low { background: rgba(56, 189, 248, 0.14); color: var(--low); }
 
+/* SLA vencido */
+.badge-overdue {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: rgba(244, 63, 94, 0.16);
+  color: var(--critical);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
 .sev-critical { color: var(--critical); }
 .sev-high { color: var(--high); }
 .sev-medium { color: var(--medium); }

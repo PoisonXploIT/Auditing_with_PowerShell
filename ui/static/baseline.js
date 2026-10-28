@@ -16,6 +16,7 @@ async function renderBaseline() {
     const base = await api("/api/baseline");
     const threats = await api("/api/threats?limit=300");
     const allow = await api("/api/allowlist");
+    const sla = await api("/api/sla");
 
     const kpis = [
       { cls: "neutral", label: "Auditorias indexadas", value: base.audits },
@@ -24,6 +25,7 @@ async function renderBaseline() {
       { cls: "critical", label: "Abiertos", value: base.open },
       { cls: "low", label: "Resueltos", value: base.resolved },
       { cls: "neutral", label: "Falsos positivos", value: base.false_positive },
+      { cls: "critical", label: "SLA vencido", value: base.overdue },
     ]
       .map(
         (k) =>
@@ -45,6 +47,11 @@ async function renderBaseline() {
               ">" + esc(STATUS_LABELS[s]) + "</option>"
           )
           .join("");
+        const due = t.due_at
+          ? (t.overdue
+              ? '<span class="badge-overdue">Vencido ' + Math.abs(t.days_left) + " d</span>"
+              : esc(t.due_at) + " (" + t.days_left + " d)")
+          : "—";
         return (
           "<tr>" +
           '<td><strong>' + esc(t.type) + "</strong>" +
@@ -53,6 +60,7 @@ async function renderBaseline() {
           '<td class="num">' + t.occurrences + "</td>" +
           '<td class="mono">' + esc(t.first_seen || "—") + "</td>" +
           '<td class="mono">' + esc(t.last_seen || "—") + "</td>" +
+          '<td class="mono">' + due + "</td>" +
           '<td class="mono">' + mitre + "</td>" +
           '<td><select class="select mono" data-sig="' + esc(t.signature) + '" data-note="' + esc(t.note || "") + '">' + opts + "</select></td>" +
           "</tr>"
@@ -86,6 +94,35 @@ async function renderBaseline() {
       })
       .join("");
 
+    const slaRows = Object.entries(sla.by_severity || {})
+      .map(([sev, b]) => {
+        const pct = b.open ? Math.round((b.overdue / b.open) * 100) : 0;
+        return (
+          "<tr>" +
+          '<td class="mono" style="color:' + (SEV_COLORS[sev] || "var(--text)") + '">' + esc(sev) + "</td>" +
+          '<td class="num">' + b.sla_days + "</td>" +
+          '<td class="num">' + b.open + "</td>" +
+          '<td class="num">' + b.overdue + "</td>" +
+          '<td class="num">' + pct + "%</td>" +
+          '<td class="mono">' + esc(b.oldest || "—") + "</td>" +
+          "</tr>"
+        );
+      })
+      .join("");
+
+    const overdueRows = (sla.overdue_list || [])
+      .map(
+        (o) =>
+          "<tr>" +
+          "<td>" + esc(o.type) + "</td>" +
+          '<td class="mono">' + esc(o.severity) + "</td>" +
+          '<td class="mono">' + esc(o.due_at) + "</td>" +
+          '<td class="num badge-overdue">' + o.days_overdue + " d</td>" +
+          '<td class="num">' + o.occurrences + "</td>" +
+          "</tr>"
+      )
+      .join("");
+
     el.innerHTML =
       '<div class="card">' +
       '<div class="card-head"><span class="card-title">Baseline acumulada</span>' +
@@ -99,9 +136,22 @@ async function renderBaseline() {
       '<div class="card-head"><span class="card-title">Hallazgos</span>' +
       '<span class="card-sub">Cada fila es una firma unica; cambiar el estado alimenta el triage</span></div>' +
       '<div class="table-wrap"><table>' +
-      "<thead><tr><th>Hallazgo</th><th>Severidad</th><th>Ocurrencias</th><th>Primera vez</th><th>Ultima vez</th><th>MITRE</th><th>Estado</th></tr></thead>" +
-      "<tbody>" + (rows || '<tr><td colspan="7" class="text-muted">Sin hallazgos indexados. Ejecute una auditoria.</td></tr>') + "</tbody>" +
+      "<thead><tr><th>Hallazgo</th><th>Severidad</th><th>Ocurrencias</th><th>Primera vez</th><th>Ultima vez</th><th>Vencimiento</th><th>MITRE</th><th>Estado</th></tr></thead>" +
+      "<tbody>" + (rows || '<tr><td colspan="8" class="text-muted">Sin hallazgos indexados. Ejecute una auditoria.</td></tr>') + "</tbody>" +
       "</table></div></div>" +
+      '<div class="card" style="margin-top:18px">' +
+      '<div class="card-head"><span class="card-title">SLA por severidad</span>' +
+      '<span class="card-sub">Plazo desde la primera aparicion hasta que alguien lo tria</span></div>' +
+      '<div class="table-wrap"><table>' +
+      "<thead><tr><th>Severidad</th><th>SLA (dias)</th><th>Abiertos</th><th>Vencidos</th><th>% vencido</th><th>Mas antiguo</th></tr></thead>" +
+      "<tbody>" + (slaRows || '<tr><td colspan="6" class="text-muted">Sin hallazgos abiertos.</td></tr>') + "</tbody>" +
+      "</table></div>" +
+      (overdueRows
+        ? '<div class="table-wrap" style="margin-top:12px"><table>' +
+          "<thead><tr><th>Hallazgo vencido</th><th>Severidad</th><th>Vencia</th><th>Dias</th><th>Ocurrencias</th></tr></thead>" +
+          "<tbody>" + overdueRows + "</tbody></table></div>"
+        : '<div class="text-muted">Ningun hallazgo abierto ha superado su plazo.</div>') +
+      "</div>" +
       '<div class="card" style="margin-top:18px">' +
       '<div class="card-head"><span class="card-title">Allowlist derivada del triage</span>' +
       '<span class="card-sub">Un hallazgo marcado como falso positivo se convierte en regla para la siguiente auditoria</span></div>' +
