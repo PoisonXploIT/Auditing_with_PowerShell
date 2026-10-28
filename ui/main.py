@@ -1236,7 +1236,7 @@ def audit_to_splunk(audit_id: str, request: Request):
     if folder is None:
         raise HTTPException(status_code=404, detail="Auditoria no encontrada")
     meta = build_audit_meta(folder)
-    result = integrations.push_to_splunk(meta, load_threats(folder))
+    result = integrations.push_to_splunk(meta, load_threats(folder) + meta["suppressed"])
     auth.record_event(
         getattr(request.state, "user", {}).get("username"),
         "splunk_push",

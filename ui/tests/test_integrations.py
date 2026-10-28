@@ -77,6 +77,31 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(event["event"]["threats"], 3)
         self.assertEqual(len(event["event"]["details"]), 3)
 
+    def test_splunk_event_usa_claves_reales_del_meta(self):
+        """build_audit_meta devuelve risk_level, threats_count y suppressed como lista."""
+        event = integrations.splunk_event(
+            {
+                "id": "Auditoria_20261028_124556",
+                "risk_level": "BAJO",
+                "threats_count": 0,
+                "severity_counts": {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0},
+                "suppressed": [{"severity": "MEDIUM", "type": "Puerto", "description": "Puerto 9999"}],
+            },
+            [{"severity": "MEDIUM", "type": "Puerto", "description": "Puerto 9999", "mitre": "T1571"}],
+        )
+        self.assertEqual(event["event"]["risk"], "BAJO")
+        self.assertEqual(event["event"]["threats"], 0)
+        self.assertEqual(event["event"]["suppressed"], 1)
+        self.assertEqual(event["event"]["details"][0]["mitre"], "T1571")
+        self.assertNotIn("index", event)  # Splunk usa el de la fuente HEC
+
+        os.environ["SPLUNK_HEC_INDEX"] = "security"
+        try:
+            event = integrations.splunk_event({"id": "A"}, [])
+            self.assertEqual(event["index"], "security")
+        finally:
+            os.environ.pop("SPLUNK_HEC_INDEX")
+
     def test_status_no_expone_valores(self):
         os.environ["SPLUNK_HEC_URL"] = "http://127.0.0.1:8088"
         os.environ["SPLUNK_HEC_TOKEN"] = "no-se-muestra"

@@ -144,24 +144,25 @@ def enrich_ioc(ioc: dict[str, Any], timeout: int = 10) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def splunk_event(audit_meta: dict[str, Any], threats: list[dict[str, Any]]) -> dict[str, Any]:
+    suppressed = audit_meta.get("suppressed", 0)
+    suppressed_count = len(suppressed) if isinstance(suppressed, list) else int(suppressed or 0)
+
     event: dict[str, Any] = {
         "time": datetime.now().timestamp(),
         "source": "Invoke-SecurityAudit",
         "sourcetype": "audit:security",
         "event": {
-            "audit_id": audit_meta.get("id"),
-            "risk": audit_meta.get("risk"),
-            "threats": audit_meta.get("threats", 0),
-            "suppressed": audit_meta.get("suppressed", 0),
-            "duration": audit_meta.get("duration"),
-            "elevated": audit_meta.get("elevated"),
+            "audit_id": audit_meta.get("id") or audit_meta.get("audit_id"),
+            "risk": audit_meta.get("risk_level") or audit_meta.get("risk"),
+            "threats": audit_meta.get("threats_count") or audit_meta.get("threats", 0),
+            "suppressed": suppressed_count,
             "severity_counts": audit_meta.get("severity_counts", {}),
             "details": [
                 {
-                    "type": t.get("ThreatType"),
-                    "severity": t.get("Severity"),
-                    "description": t.get("Description"),
-                    "mitre": t.get("MitreTechnique"),
+                    "type": t.get("ThreatType") or t.get("type"),
+                    "severity": (t.get("Severity") or t.get("severity") or "LOW").upper(),
+                    "description": t.get("Description") or t.get("description"),
+                    "mitre": t.get("MitreTechnique") or t.get("mitre") or "",
                 }
                 for t in threats
             ],
