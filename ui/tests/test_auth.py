@@ -3,6 +3,7 @@
 Ejecutar:  python -m unittest ui.tests.test_auth -v
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -105,6 +106,46 @@ class AuthTests(unittest.TestCase):
         os.environ.pop("AUDIT_ADMIN_USER", None)
         os.environ.pop("AUDIT_ADMIN_PASSWORD", None)
         self.assertIsNone(auth.bootstrap_admin())
+
+    def test_hash_string_round_trip(self):
+        digest = auth.password_hash_string("correcta-123")
+        self.assertTrue(digest.startswith("scrypt$"))
+        self.assertTrue(auth.verify_hash_string("correcta-123", digest))
+        self.assertFalse(auth.verify_hash_string("incorrecta", digest))
+        with self.assertRaises(ValueError):
+            auth.parse_hash_string("no-es-un-hash")
+
+    def test_bootstrap_admin_from_hash_sin_clave_en_claro(self):
+        """El entorno puede contener solo el digest: la contraseña nunca se guarda."""
+        with db.connect() as conn:
+            conn.execute("DELETE FROM users")
+        digest = auth.password_hash_string("correcta-123")
+        os.environ["AUDIT_ADMIN_USER"] = "admin-hash"
+        os.environ["AUDIT_ADMIN_PASSWORD_HASH"] = digest
+        os.environ.pop("AUDIT_ADMIN_PASSWORD", None)
+        try:
+            created = auth.bootstrap_admin()
+            self.assertIsNotNone(created)
+            self.assertEqual(created["role"], "admin")
+            # El hash almacenado es el mismo formato que se verificara al iniciar sesion.
+            user = auth.get_user("admin-hash")
+            self.assertTrue(auth.verify_password("correcta-123", user["password_hash"], user["salt"]))
+            self.assertIsNone(auth.login("admin-hash", "otra-clave"))
+            self.assertIsNone(auth.bootstrap_admin())  # idempotente
+        finally:
+            os.environ.pop("AUDIT_ADMIN_USER", None)
+            os.environ.pop("AUDIT_ADMIN_PASSWORD_HASH", None)
+
+    def test_secret_posture_no_devuelve_valores(self):
+        os.environ["AUDIT_ADMIN_PASSWORD"] = "secreto-que-no-se-muestra"
+        os.environ.pop("AUDIT_ADMIN_PASSWORD_HASH", None)
+        posture = auth.secret_posture()
+        self.assertEqual(posture["admin_password_source"], "claro")
+        self.assertNotIn("secreto-que-no-se-muestra", json.dumps(posture))
+        os.environ["AUDIT_ADMIN_PASSWORD_HASH"] = auth.password_hash_string("secreto-que-no-se-muestra")
+        self.assertEqual(auth.secret_posture()["admin_password_source"], "hash")
+        os.environ.pop("AUDIT_ADMIN_PASSWORD", None)
+        os.environ.pop("AUDIT_ADMIN_PASSWORD_HASH", None)
 
 
 if __name__ == "__main__":

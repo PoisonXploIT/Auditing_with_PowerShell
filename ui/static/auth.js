@@ -48,6 +48,7 @@ async function doLogin() {
     }
     document.getElementById("login-pass").value = "";
     err.textContent = "";
+    window.csrfToken = body.csrf_token || "";
     await checkAuth();
     toast("Sesion iniciada como " + body.username, "success");
     loadAudits();

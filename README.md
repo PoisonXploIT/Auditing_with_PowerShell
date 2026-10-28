@@ -569,6 +569,12 @@ La consola ya no es publica: toda la API responde `401` sin sesion.
 
 - Hash de contraseña con **scrypt** (salt aleatorio, `n=16384`).
 - Sesion en cookie `audit_session`, `HttpOnly` y `SameSite=Lax`.
+- **CSRF en todas las mutaciones**: ademas del chequeo de `Origin`/`Referer`, toda
+  `POST`/`PUT`/`PATCH`/`DELETE` sobre `/api/` exige la cabecera `X-CSRF-Token` con el
+  mismo valor que la cookie `audit_csrf` de la sesion. Sin ese token no se aplica ningun
+  cambio, lo que cierra el hueco de una peticion sin `Origin` ni `Referer` (curl, un
+  formulario de un sitio ajeno). El unico endpoint exento es `/api/auth/login`, porque
+  el token se obtiene al iniciar sesion.
 - **Caducidad por inactividad**: 30 minutos. Cada peticion renueva la ventana; si nadie
   la usa, la sesion se revoca y la cookie deja de valer. No es un plazo absoluto.
 - Bloqueo de cuenta tras 5 intentos fallidos (15 minutos).
@@ -581,6 +587,25 @@ El usuario administrador se crea **desde variables de entorno**, nunca desde un 
 setx AUDIT_ADMIN_USER "sammi"
 setx AUDIT_ADMIN_PASSWORD "tu-clave-real"   # min. 8 caracteres
 ```
+
+**La contraseña en claro se puede evitar.** `AUDIT_ADMIN_PASSWORD` queda legible en
+`HKCU\Environment` para cualquier proceso, backup o volcado de logs. Se puede guardar
+solo el digest scrypt, que no se puede invertir:
+
+```powershell
+# 1. Generar el hash (pide la contraseña, no la escribe en ningun sitio)
+.\ui\.venv\Scripts\python.exe ui\bootstrap_admin.py --hash
+
+# 2. Guardar el hash en el entorno, no la clave
+setx AUDIT_ADMIN_PASSWORD_HASH "scrypt$<salt>$<hash>"
+
+# 3. Ver la postura de secretos (nombres y fuente, nunca valores)
+.\ui\.venv\Scripts\python.exe ui\bootstrap_admin.py --posture
+```
+
+`bootstrap_admin()` prefiere `AUDIT_ADMIN_PASSWORD_HASH` y solo cae a
+`AUDIT_ADMIN_PASSWORD` si no hay hash. `GET /api/config` incluye `secrets` con la
+fuente del bootstrap (`hash`, `claro` o `none`) y si `AUDIT_SIGN_KEY` esta definida.
 
 **Ojo: el bootstrap solo crea, no actualiza.** `bootstrap_admin()` inserta la cuenta
 si no existe ningun administrador. Si `sammi` ya existe, cambiar `AUDIT_ADMIN_PASSWORD`

@@ -8,10 +8,12 @@ con progreso en vivo a traves del script PowerShell en modo headless.
 
 import base64
 import csv
+import hmac
 import io
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import threading
@@ -248,6 +250,7 @@ def get_config():
         "results_dir": str(RESULTS_DIR),
         "script_path": str(SCRIPT_PATH),
         "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "secrets": auth.secret_posture(),
     }
 
 
@@ -1174,6 +1177,7 @@ def health():
 def auth_login(req: LoginRequest, request: Request):
     ip = request.client.host if request.client else ""
     session = auth.login(req.username, req.password, ip)
+    csrf_token = secrets.token_hex(32)
     if session is None:
         user = auth.get_user(req.username)
         if user and user.get("locked_until"):
@@ -1182,7 +1186,14 @@ def auth_login(req: LoginRequest, request: Request):
                 detail="Cuenta bloqueada temporalmente por intentos fallidos. Espera 15 minutos.",
             )
         raise HTTPException(status_code=401, detail="Credenciales invalidas")
-    response = JSONResponse({"username": session["username"], "role": session["role"], "expires_at": session["expires_at"]})
+    response = JSONResponse(
+        {
+            "username": session["username"],
+            "role": session["role"],
+            "expires_at": session["expires_at"],
+            "csrf_token": csrf_token,
+        }
+    )
     response.set_cookie(
         key="audit_session",
         value=session["token"],
@@ -1191,6 +1202,9 @@ def auth_login(req: LoginRequest, request: Request):
         max_age=auth.SESSION_TTL_MINUTES * 60,
         path="/",
     )
+    # Cookie leible por el frontend: el token CSRF no es un secreto de servidor,
+    # es un marcador de doble submission que debe coincidir con la cabecera.
+    response.set_cookie(key=CSRF_COOKIE, value=csrf_token, httponly=False, samesite="lax", path="/")
     return response
 
 
@@ -1202,6 +1216,7 @@ def auth_logout(request: Request):
     auth.record_event(user.get("username") if user else None, "logout", "")
     response = JSONResponse({"logged_out": True})
     response.delete_cookie("audit_session")
+    response.delete_cookie(CSRF_COOKIE)
     return response
 
 
@@ -1437,21 +1452,48 @@ def verify_export(filename: str):
 # ---------------------------------------------------------------------------
 
 ALLOWED_ORIGINS = {"http://127.0.0.1:8502", "http://localhost:8502"}
+MUTATION_METHODS = ("POST", "PUT", "DELETE", "PATCH")
+CSRF_COOKIE = "audit_csrf"
+CSRF_HEADER = "X-CSRF-Token"
+
+# El login no puede exigir token: el token se obtiene al iniciar sesion.
+CSRF_EXEMPT_PATHS = {"/api/auth/login"}
+
+
+def _request_origin(request) -> str:
+    origin = request.headers.get("origin", "")
+    if not origin:
+        referer = request.headers.get("referer", "")
+        if referer:
+            parts = referer.split("/", 3)
+            origin = parts[0] + "//" + (parts[2] if len(parts) > 2 else "")
+    return origin
 
 
 class SecurityMiddleware(BaseHTTPMiddleware):
-    """Puerta CSRF (verificacion de Origin/Referer en mutaciones) y headers de seguridad."""
+    """Puerta CSRF en TODAS las mutaciones de la API, y headers de seguridad.
+
+    Dos capas, ninguna opcional:
+      1. Origin/Referer: un origen ajeno se rechaza aunque lleve token.
+      2. Token de doble submission: la mutacion debe llevar en la cabecera
+         X-CSRF-Token el mismo valor que la cookie audit_csrf de la sesion.
+         Sin ese header no se aplica ningun cambio, lo que cierra el hueco de
+         una peticion sin Origin ni Referer (curl, formularios de terceros).
+    """
 
     async def dispatch(self, request, call_next):
-        if request.method in ("POST", "PUT", "DELETE", "PATCH"):
-            origin = request.headers.get("origin", "")
-            if not origin:
-                referer = request.headers.get("referer", "")
-                if referer:
-                    parts = referer.split("/", 3)
-                    origin = parts[0] + "//" + (parts[2] if len(parts) > 2 else "")
+        if request.method in MUTATION_METHODS and request.url.path.startswith("/api/"):
+            origin = _request_origin(request)
             if origin and origin not in ALLOWED_ORIGINS:
                 return JSONResponse(status_code=403, content={"detail": "Origen no autorizado (CSRF)"})
+            if request.url.path not in CSRF_EXEMPT_PATHS:
+                header = request.headers.get(CSRF_HEADER, "")
+                cookie = request.cookies.get(CSRF_COOKIE, "")
+                if not header or not cookie or not hmac.compare_digest(header, cookie):
+                    return JSONResponse(
+                        status_code=403,
+                        content={"detail": "Falta el token CSRF: las mutaciones requieren la cabecera X-CSRF-Token de la sesion"},
+                    )
         response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")

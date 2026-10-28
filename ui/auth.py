@@ -87,6 +87,53 @@ def verify_password(password: str, stored_hash: str, salt: str) -> bool:
     return hmac.compare_digest(digest.hex(), stored_hash)
 
 
+def password_hash_string(password: str) -> str:
+    """Formato portable para AUDIT_ADMIN_PASSWORD_HASH: scrypt$<salt>$<hash>.
+
+    La clave en claro no tiene que llegar al entorno: se genera el hash en local
+    y solo se guarda el digest. El entorno deja de contener la contraseña.
+    """
+    digest, salt = hash_password(password)
+    return f"scrypt${salt}${digest}"
+
+
+def parse_hash_string(hash_string: str) -> tuple[str, str]:
+    """Descomponer 'scrypt$<salt>$<hash>'. Si falla, ValueError con motivo legible."""
+    parts = (hash_string or "").strip().split("$")
+    if len(parts) != 3 or parts[0] != "scrypt" or not parts[1] or not parts[2]:
+        raise ValueError("AUDIT_ADMIN_PASSWORD_HASH debe tener el formato scrypt$<salt>$<hash>")
+    return parts[2], parts[1]
+
+
+def verify_hash_string(password: str, hash_string: str) -> bool:
+    digest, salt = parse_hash_string(hash_string)
+    return verify_password(password, digest, salt)
+
+
+def create_user_from_hash(username: str, hash_string: str, role: str = "analyst") -> dict[str, Any]:
+    """Crear un usuario a partir de un hash scrypt ya calculado.
+
+    No se necesita conocer la contraseña en claro: el entorno solo almacena el
+    digest, y quien no tiene la clave original no puede recuperarla.
+    """
+    username = (username or "").strip().lower()
+    if not username or len(username) < 3:
+        raise ValueError("nombre de usuario demasiado corto (minimo 3)")
+    if role not in ("admin", "analyst", "viewer"):
+        raise ValueError("rol invalido: admin, analyst o viewer")
+    stored_hash, salt = parse_hash_string(hash_string)
+    with _LOCK, db.connect() as conn:
+        try:
+            conn.execute(
+                "INSERT INTO users (username, password_hash, salt, role, created_at) VALUES (?, ?, ?, ?, ?)",
+                (username, stored_hash, salt, role, _fmt(_now())),
+            )
+        except sqlite3.IntegrityError:
+            raise ValueError(f"el usuario {username} ya existe")
+    record_event(username, "user_created", f"role={role}, hash=precalculado")
+    return {"username": username, "role": role, "created_at": _fmt(_now())}
+
+
 def create_user(username: str, password: str, role: str = "analyst") -> dict[str, Any]:
     username = (username or "").strip().lower()
     if not username or len(username) < 3:
@@ -326,13 +373,42 @@ def trail_stats() -> dict[str, Any]:
 
 
 def bootstrap_admin() -> Optional[dict[str, Any]]:
-    """Crea el usuario administrador desde variables de entorno, nunca de un fichero."""
+    """Crea el usuario administrador desde variables de entorno, nunca de un fichero.
+
+    Orden de preferencia:
+      1. AUDIT_ADMIN_PASSWORD_HASH (scrypt$<salt>$<hash>): el entorno no contiene
+         la contraseña, solo su digest.
+      2. AUDIT_ADMIN_PASSWORD (en claro): compatible con la configuracion antigua.
+    """
     with db.connect() as conn:
         admins = conn.execute("SELECT COUNT(*) AS c FROM users WHERE role = 'admin'").fetchone()["c"]
     if admins:
         return None
-    user = os.environ.get("AUDIT_ADMIN_USER")
+    user = (os.environ.get("AUDIT_ADMIN_USER") or "").strip()
+    if not user:
+        return None
+    hash_string = os.environ.get("AUDIT_ADMIN_PASSWORD_HASH", "").strip()
+    if hash_string:
+        return create_user_from_hash(user, hash_string, "admin")
     password = os.environ.get("AUDIT_ADMIN_PASSWORD")
-    if not user or not password:
+    if not password:
         return None
     return create_user(user, password, "admin")
+
+
+def secret_posture() -> dict[str, Any]:
+    """Postura de secretos del entorno: nombres y fuente, nunca valores.
+
+    Sirve para saber si la clave sigue en claro o ya se migro a hash, sin exponer
+    el contenido de la variable.
+    """
+    return {
+        "admin_user": os.environ.get("AUDIT_ADMIN_USER") or None,
+        "admin_password_source": (
+            "hash" if os.environ.get("AUDIT_ADMIN_PASSWORD_HASH", "").strip()
+            else "claro" if os.environ.get("AUDIT_ADMIN_PASSWORD", "").strip()
+            else "none"
+        ),
+        "sign_key_defined": bool(os.environ.get("AUDIT_SIGN_KEY", "").strip()),
+        "trail_retention_days": os.environ.get("AUDIT_TRAIL_RETENTION_DAYS", "90"),
+    }

@@ -49,10 +49,24 @@ function esc(v) {
     .replace(/"/g, "&quot;");
 }
 
+function csrfToken() {
+  if (window.csrfToken) return window.csrfToken;
+  const match = document.cookie.match(/(?:^|;\s*)audit_csrf=([^;]+)/);
+  return match ? match[1] : "";
+}
+
 async function api(path, opts = {}) {
+  const method = (opts.method || "GET").toUpperCase();
+  const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
+  // Las mutaciones requieren el token de la sesion; el backend lo exige siempre.
+  if (method !== "GET" && method !== "HEAD") {
+    const token = csrfToken();
+    if (token) headers["X-CSRF-Token"] = token;
+  }
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
     ...opts,
+    method,
+    headers,
   });
   if (res.status === 401) {
     // La sesion caduco por inactividad: mostrar el acceso y no dejar la UI a medias.

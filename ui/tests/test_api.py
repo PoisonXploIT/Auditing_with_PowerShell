@@ -8,6 +8,7 @@ ni las carpetas Auditoria_* reales.
 
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -36,7 +37,10 @@ def _login(username="admin-test", password="clave-de-test", role="admin"):
         auth.create_user(username, password, role)
     except ValueError:
         pass  # ya existe de un test anterior
-    return client.post("/api/auth/login", json={"username": username, "password": password})
+    r = client.post("/api/auth/login", json={"username": username, "password": password})
+    # La sesion arrastra su token CSRF: sin la cabecera, el backend rechaza la mutacion.
+    client.headers["X-CSRF-Token"] = r.json().get("csrf_token", "")
+    return r
 
 
 def _seed_threat():
@@ -175,6 +179,42 @@ class ApiTests(unittest.TestCase):
             json={"process": "x", "reason": "y"},
         )
         self.assertEqual(r.status_code, 403)
+
+    def test_mutacion_sin_token_csrf_rechazada(self):
+        """Una peticion sin Origin ni Referer (curl, formulario de terceros) no muta.
+
+        La sesion es valida; lo que falta es el token de doble submission.
+        """
+        fresh = TestClient(main.app)
+        fresh.post("/api/auth/login", json={"username": "admin-test", "password": "clave-de-test"})
+        r = fresh.post("/api/allowlist", json={"process": "x", "reason": "y"})
+        self.assertEqual(r.status_code, 403)
+        self.assertIn("CSRF", r.json()["detail"])
+        # El rechazo es previo a la escritura: no queda regla creada.
+        self.assertEqual(client.get("/api/allowlist").json()["entries"], [])
+
+    def test_todas_las_mutaciones_pasan_por_el_middleware_csrf(self):
+        """Inventario: cada ruta de escritura de la API está protegida, incluida
+        /api/sla/alert y los endpoints de exports."""
+        mutating = []
+        for route in main.app.routes:
+            methods = getattr(route, "methods", set())
+            if methods & {"POST", "PUT", "PATCH", "DELETE"}:
+                mutating.append((route.path, sorted(methods)))
+        self.assertIn("/api/sla/alert", [p for p, _ in mutating])
+        # /api/exports es de lectura: si algun dia se convierte en escritura, el
+        # middleware la cubre porque la puerta se aplica por metodo, no por ruta.
+        self.assertNotIn("/api/exports", [p for p, _ in mutating])
+        for path, methods in mutating:
+            url = re.sub(r"\{[^}]+\}", "x", path)
+            for method in methods:
+                if method == "GET":
+                    continue
+                r = client.request(method, url, headers={"Origin": "https://evil.example"}, content=b"")
+                self.assertEqual(
+                    r.status_code, 403,
+                    f"{method} {url} no esta cerrada por el middleware CSRF",
+                )
 
     def test_trend_series(self):
         r = client.get("/api/trend")
