@@ -238,3 +238,28 @@ def coverage_gap(layer: dict[str, Any], known_techniques: list[str]) -> list[str
     """Tecnicas de la referencia que NO aparecen en la capa: huecos de deteccion."""
     present = {t["techniqueID"] for t in layer["techniques"]}
     return [tech for tech in known_techniques if tech not in present]
+
+
+# Tecnicas que la herramienta pretende cubrir (son las del MitreMap del script PowerShell).
+# Comparar la capa observada contra esta lista convierte el "no miramos X" en un hueco
+# medible: una tecnica declarada pero no observada en ninguna ejecucion es una deteccion
+# que no esta disparando.
+TARGET_TECHNIQUES = [
+    "T1027.010",  # Command Obfuscation
+    "T1059.001",  # PowerShell
+    "T1218",      # System Binary Proxy Execution (LOLBAS)
+    "T1055",      # Process Injection
+    "T1036.005",  # Match Legitimate Resource Name or Location
+    "T1095",      # Non-Application Layer Protocol
+    "T1078.003",  # Local Accounts
+    "T1110.003",  # Password Spraying
+    "T1547.001",  # Registry Run Keys / Startup Folder
+    "T1564.001",  # Hidden Files and Directories
+    "T1557.001",  # Name Resolution Poisoning
+    "T1686.003",  # Windows Host Firewall
+    "T1685",      # Disable or Modify Tools
+    "T1112",      # Modify Registry
+    "T1021.002",  # SMB/Windows Admin Shares
+    "T1014",      # Rootkit
+    "T1571",      # Non-Standard Port
+]

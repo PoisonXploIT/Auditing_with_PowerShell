@@ -15,6 +15,7 @@ async function renderIntegrations() {
 
     let iocBlock = '<div class="text-muted">Selecciona una auditoria para extraer sus indicadores.</div>';
     let navBlock = "";
+    let integrityBlock = "";
 
     if (auditId) {
       const iocs = await api("/api/audits/" + encodeURIComponent(auditId) + "/iocs");
@@ -42,6 +43,19 @@ async function renderIntegrations() {
         '<button class="btn btn-primary" data-splunk>Enviar a Splunk (HEC)</button>' +
         '<span class="text-muted" id="splunk-result"></span>' +
         "</div>";
+
+      const verify = await api("/api/audits/" + encodeURIComponent(auditId) + "/verify", { method: "POST" });
+      integrityBlock =
+        '<div class="flex" style="gap:8px;flex-wrap:wrap">' +
+        '<span class="badge ' + (verify.ok ? "low" : "critical") + '">' + esc(verify.status) + "</span>" +
+        '<span class="mono text-muted">' + (verify.file_count || 0) + " ficheros</span>" +
+        '<span class="mono text-muted">root SHA-256 ' + esc((verify.root_sha256 || "-").slice(0, 16)) + "</span>" +
+        "</div>" +
+        (verify.mismatches && verify.mismatches.length
+          ? '<div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>Fichero</th><th>Problema</th></tr></thead><tbody>' +
+            verify.mismatches.map((m) => '<tr><td class="mono">' + esc(m.path) + "</td><td>" + esc(m.problem) + "</td></tr>").join("") +
+            "</tbody></table></div>"
+          : "");
     }
 
     el.innerHTML =
@@ -57,6 +71,10 @@ async function renderIntegrations() {
       '<div class="card-head"><span class="card-title">Indicadores (IOCs) de ' + esc(auditId || "—") + "</span>" +
       '<span class="card-sub">IP, puertos, procesos y rutas derivados de los hallazgos</span></div>' +
       iocBlock + "</div>" +
+      '<div class="card" style="margin-top:18px">' +
+      '<div class="card-head"><span class="card-title">Integridad de la evidencia</span>' +
+      '<span class="card-sub">SHA-256 de cada fichero declarado en MANIFEST_EVIDENCIA.json</span></div>' +
+      (integrityBlock || '<div class="text-muted">Sin auditoria seleccionada.</div>') + "</div>" +
       '<div class="card" style="margin-top:18px">' +
       '<div class="card-head"><span class="card-title">Salidas</span>' +
       '<span class="card-sub">Capa del Navigator para abrirla en attack.mitre.org y envio al collector</span></div>' +

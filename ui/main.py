@@ -28,6 +28,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from fpdf import FPDF
 
 import db
+import evidence
 import auth
 import integrations
 
@@ -1249,6 +1250,57 @@ def audit_to_splunk(audit_id: str, request: Request):
         f"{audit_id} -> {'ok' if result['ok'] else 'fallido'}",
     )
     return result
+
+
+@app.get("/api/audits/{audit_id}/manifest")
+def audit_manifest(audit_id: str):
+    """Manifiesto de evidencia: SHA-256 de cada fichero de la auditoria."""
+    folder = _safe_audit_dir(audit_id)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Auditoria no encontrada")
+    manifest = evidence.load_manifest(folder) or evidence.build_manifest(folder)
+    return manifest
+
+
+@app.post("/api/audits/{audit_id}/verify")
+def audit_verify(audit_id: str, request: Request):
+    """Comprobar que la evidencia no ha sido alterada desde la ejecucion."""
+    folder = _safe_audit_dir(audit_id)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Auditoria no encontrada")
+    result = evidence.verify_manifest(folder)
+    auth.record_event(
+        getattr(request.state, "user", {}).get("username"),
+        "evidence_verify",
+        f"{audit_id} -> {result['status']}",
+    )
+    return result
+
+
+@app.get("/api/audits/{audit_id}/signature")
+def audit_signature(audit_id: str, file: str = "RESUMEN_EJECUTIVO.txt"):
+    """Firma HMAC-SHA256 de un export, para que se pueda verificar fuera de la consola."""
+    folder = _safe_audit_dir(audit_id)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Auditoria no encontrada")
+    return evidence.export_signature(folder, file)
+
+
+@app.get("/api/audits/{audit_id}/coverage")
+def audit_coverage(audit_id: str):
+    """Mapa de huecos: tecnicas MITRE observadas frente a las que deberian cubrirse."""
+    folder = _safe_audit_dir(audit_id)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Auditoria no encontrada")
+    threats = load_threats(folder) + parse_suppressed(folder / "RESUMEN_EJECUTIVO.txt")
+    layer = integrations.navigator_layer(f"Auditoria {audit_id}", threats)
+    observed = sorted({t["techniqueID"] for t in layer["techniques"]})
+    return {
+        "audit_id": audit_id,
+        "observed": observed,
+        "declared_gaps": build_audit_meta(folder)["coverage_gaps"],
+        "gap_vs_target": integrations.coverage_gap(layer, integrations.TARGET_TECHNIQUES),
+    }
 
 
 # ---------------------------------------------------------------------------

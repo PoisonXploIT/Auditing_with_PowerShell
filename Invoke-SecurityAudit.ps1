@@ -1859,6 +1859,63 @@ function New-ExecutiveSummary {
 .SYNOPSIS
     Funcion principal que ejecuta la auditoria completa
 #>
+function New-EvidenceManifest {
+    <#
+    .SYNOPSIS
+        Genera el manifiesto de evidencia: SHA-256 de cada fichero de la auditoria.
+        Sin esto, un informe no es defendible: cualquiera puede editar un JSON y nadie
+        lo detecta.
+    #>
+    param([string]$AuditPath)
+
+    try {
+        $files = Get-ChildItem -Path $AuditPath -Recurse -File | Where-Object {
+            $_.Name -ne "MANIFEST_EVIDENCIA.json" -and $_.Name -ne "IA_ENRICH.json"
+        } | Sort-Object FullName
+
+        $entries = @()
+        foreach ($f in $files) {
+            $rel = $f.FullName.Substring($AuditPath.Length).TrimStart('\', '/')
+            $entries += [PSCustomObject]@{
+                path      = $rel
+                sha256    = (Get-FileHash -Path $f.FullName -Algorithm SHA256).Hash.ToLower()
+                bytes     = $f.Length
+                modified  = $f.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")
+            }
+        }
+
+        # Hash de root: concatenacion ordenada de los hashes individuales. Cambiar un
+        # solo byte de un modulo cambia la raiz. ComputeHash en lugar de Update/FinalHash
+        # porque Windows PowerShell 5.1 devuelve SHA256Managed, que no expone Update.
+        $concat = ($entries | ForEach-Object { $_.sha256 }) -join ""
+        $rootHash = ([BitConverter]::ToString(
+            [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+                [System.Text.Encoding]::UTF8.GetBytes($concat)
+            )
+        ) -replace '-', '').ToLower()
+
+        $manifest = [PSCustomObject]@{
+            schema        = "audit-evidence/1"
+            audit_id      = (Split-Path $AuditPath -Leaf)
+            generated_at  = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+            host          = $env:COMPUTERNAME
+            elevated      = (Test-Administrator)
+            file_count    = $entries.Count
+            total_bytes   = ($entries | Measure-Object -Property bytes -Sum).Sum
+            root_sha256   = $rootHash
+            files         = $entries
+        }
+
+        $manifestPath = Join-Path $AuditPath "MANIFEST_EVIDENCIA.json"
+        $manifest | ConvertTo-Json -Depth 4 | Out-File -FilePath $manifestPath -Encoding UTF8
+        Write-AuditLog "[EVIDENCIA] Manifiesto con $($entries.Count) ficheros, root SHA-256 $rootHash" -Level INFO
+        return $manifest
+    } catch {
+        Write-AuditLog "Error al generar el manifiesto de evidencia: $($_.Exception.Message)" -Level ERROR
+        return $null
+    }
+}
+
 function Start-SecurityAudit {
     # Mostrar banner
     Show-Banner
@@ -1934,6 +1991,7 @@ function Start-SecurityAudit {
         Write-Host ""
         
         $riskLevel = New-ExecutiveSummary
+        New-EvidenceManifest -AuditPath $Global:AuditPath
         
         Write-StatusFile -Phase "done" -Name "Completada" -Module $Global:TotalModules -Percent 100 `
             -Message "Auditoria completada correctamente" -RiskLevel $riskLevel
@@ -2162,6 +2220,21 @@ function Invoke-DetectionSelfTest {
             $results += Check -Suite "AllowlistExterna" -Case $e.Id -Expected $true -Actual $hit
         }
         $Global:Allowlist = $saved
+    }
+
+    # --- 6c. Ruido: falsos positivos reales que NO deben disparar, y control de
+    #           sobre-supresion (una regla no puede tapar todo lo que hace ese proceso).
+    $noiseCases = @(
+        @{ Type = "Puerto sospechoso en escucha"; Details = [PSCustomObject]@{ ProcessName = 'python'; LocalPort = 8502; LocalAddress = '127.0.0.1' }; Expected = $true;  Why = 'uvicorn de la propia consola' }
+        @{ Type = "Puerto sospechoso en escucha"; Details = [PSCustomObject]@{ ProcessName = 'python'; LocalPort = 4444; LocalAddress = '0.0.0.0' }; Expected = $false; Why = 'el mismo proceso no justifica cualquier puerto' }
+        @{ Type = "Comando codificado"; Details = [PSCustomObject]@{ Name = 'bash'; CommandLine = 'bash -c "ls"' }; Expected = $true;  Why = 'Git Bash invoking a plain command' }
+        @{ Type = "Uso sospechoso de LOLBAS"; Details = [PSCustomObject]@{ Name = 'certutil'; CommandLine = 'certutil -encode file.txt' }; Expected = $false; Why = 'certutil sigue siendo LOLBAS aunque el proceso este en allowlist' }
+        @{ Type = "Proceso sin ruta"; Details = [PSCustomObject]@{ Name = 'agent-browser-win32-x64' }; Expected = $true;  Why = 'binario de agente local sin ruta legible' }
+        @{ Type = "Proceso sin ruta"; Details = [PSCustomObject]@{ Name = 'notepad' }; Expected = $false; Why = 'proceso no declarado en la allowlist' }
+    )
+    foreach ($c in $noiseCases) {
+        $hit = [bool](Test-AllowedByAllowlist -ThreatType $c.Type -Description "test" -Details $c.Details)
+        $results += Check -Suite "Ruido" -Case $c.Why -Expected $c.Expected -Actual $hit
     }
 
     # --- 7. Deduplicacion y firma estable ---

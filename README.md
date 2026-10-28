@@ -661,7 +661,42 @@ al script con `-AllowlistPath` en la siguiente ejecución. Reabrir el hallazgo
 ```powershell
 # Comprobar que las reglas derivadas matchean sin correr una auditoria
 .\Invoke-SecurityAudit.ps1 -SelfTest -AllowlistPath .runs\allowlist_<run>.json
-# SELFTEST DE DETECCION: 103 casos, 103 OK, 0 FALLIDOS
+```
+
+### Integridad de la evidencia
+
+Un informe sin checksums no es evidencia: cualquiera puede editar un JSON y nadie lo
+detecta. Cada ejecucion genera `MANIFEST_EVIDENCIA.json` (schema `audit-evidence/1`) con
+el SHA-256, el tamano y la fecha de cada fichero, mas un `root_sha256` obtenido de
+concatenar los hashes individuales.
+
+```powershell
+# Verificar que la carpeta de una auditoria no ha sido alterada
+POST /api/audits/{id}/verify     -> {"ok": true, "status": "integro", "root_sha256": "..."}
+GET  /api/audits/{id}/manifest   -> listado de ficheros y su hash
+GET  /api/audits/{id}/signature  -> HMAC-SHA256 de un export (PDF/CSV/RESUMEN)
+```
+
+La firma de exports usa la variable `AUDIT_SIGN_KEY`. Si no esta definida, la API
+devuelve `"signed": false` con el motivo; no inventa una firma.
+
+### Cobertura real frente a la declarada
+
+`GET /api/audits/{id}/coverage` devuelve tres cosas: las tecnicas MITRE observadas, las
+omisiones declaradas por el propio script (`coverage_gaps`) y el hueco frente a las 17
+tecnicas que la herramienta pretende cubrir (`TARGET_TECHNIQUES`). Una tecnica declarada
+que no aparece en ninguna ejecucion es una deteccion que no esta disparando.
+
+### El selftest mide ruido, no solo deteccion
+
+La suite `Ruido` incluye falsos positivos reales de esta maquina (uvicorn en 8502, Git
+Bash, binarios de agente sin ruta) y comprueba dos cosas: que la allowlist los suprime,
+y que **no suprime de mas** — `certutil -encode` sigue siendo LOLBAS aunque el proceso
+este en la allowlist, y `python` en 8502 no autoriza cualquier puerto.
+
+```powershell
+.\Invoke-SecurityAudit.ps1 -SelfTest
+# SELFTEST DE DETECCION: 108 casos, 108 OK, 0 FALLIDOS
 ```
 
 ---

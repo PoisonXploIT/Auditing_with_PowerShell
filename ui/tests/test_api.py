@@ -7,6 +7,7 @@ ni las carpetas Auditoria_* reales.
 """
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -168,6 +169,52 @@ class ApiTests(unittest.TestCase):
         r = client.get("/api/trend")
         self.assertEqual(r.status_code, 200)
         self.assertIsInstance(r.json()["series"], list)
+
+
+class EvidenceApiTests(unittest.TestCase):
+    """Endpoints de evidencia y cobertura contra una auditoria real de ejemplo."""
+
+    FIXTURE = Path(__file__).resolve().parent / "fixtures"
+
+    def setUp(self):
+        client.cookies.clear()
+        _login()
+        self._original = main.RESULTS_DIR
+        main.RESULTS_DIR = self.FIXTURE
+
+    def tearDown(self):
+        main.RESULTS_DIR = self._original
+
+    def test_manifest(self):
+        r = client.get("/api/audits/Auditoria_SAMPLE/manifest")
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data["schema"], "audit-evidence/1")
+        self.assertEqual(data["file_count"], 4)
+
+    def test_verify(self):
+        r = client.post("/api/audits/Auditoria_SAMPLE/verify")
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["ok"])
+        self.assertEqual(r.json()["status"], "integro")
+
+    def test_signature_sin_clave(self):
+        os.environ.pop("AUDIT_SIGN_KEY", None)
+        r = client.get("/api/audits/Auditoria_SAMPLE/signature?file=RESUMEN_EJECUTIVO.txt")
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.json()["signed"])
+
+    def test_coverage(self):
+        r = client.get("/api/audits/Auditoria_SAMPLE/coverage")
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data["observed"], ["T1571"])
+        self.assertEqual(len(data["declared_gaps"]), 2)
+        self.assertIn("T1059.001", data["gap_vs_target"])
+
+    def test_audit_id_inexistente(self):
+        self.assertEqual(client.get("/api/audits/Auditoria_NO_EXISTE/manifest").status_code, 404)
+        self.assertEqual(client.get("/api/audits/../etc/manifest").status_code, 404)
 
 
 if __name__ == "__main__":
