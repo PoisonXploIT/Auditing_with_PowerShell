@@ -17,6 +17,7 @@ import json
 import re
 import sqlite3
 import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -54,7 +55,21 @@ CREATE TABLE IF NOT EXISTS threats (
     occurrences      INTEGER NOT NULL DEFAULT 1,
     status           TEXT NOT NULL DEFAULT 'open',
     note             TEXT,
-    resolved_at      TEXT
+    resolved_at      TEXT,
+    details          TEXT
+);
+
+CREATE TABLE IF NOT EXISTS allowlist (
+    id          TEXT PRIMARY KEY,
+    threat_type TEXT NOT NULL,
+    process     TEXT,
+    path        TEXT,
+    ports       TEXT,
+    reason      TEXT NOT NULL,
+    source      TEXT NOT NULL DEFAULT 'manual',
+    signature   TEXT,
+    created_at  TEXT NOT NULL,
+    active      INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS audit_threats (
@@ -82,6 +97,10 @@ def connect() -> sqlite3.Connection:
 def init_db() -> None:
     with _LOCK, connect() as conn:
         conn.executescript(SCHEMA)
+        # Migracion: las bases creadas antes de la allowlist no tienen estas columnas.
+        existing = {r["name"] for r in conn.execute("PRAGMA table_info(threats)")}
+        if "details" not in existing:
+            conn.execute("ALTER TABLE threats ADD COLUMN details TEXT")
 
 
 def signature(threat_type: str, description: str) -> str:
@@ -164,6 +183,17 @@ def _load_suppressed(folder: Path) -> list[dict[str, Any]]:
             m = re.match(r"^- \[([A-Z]+)\] (.*?) \| (.*)$", line)
             if m:
                 current = {"severity": m.group(1), "type": m.group(2), "description": m.group(3)}
+                # El resumen no trae los detalles estructurados de una supresion, pero
+                # la descripcion contiene el proceso y el puerto: sin eso, marcar un FP
+                # no puede traducirse en una regla.
+                proc = re.search(r"\(proceso '([^']+)'\)", current["description"])
+                port = re.search(r"puerto (\d+)", current["description"], re.IGNORECASE)
+                details = {}
+                if proc:
+                    details["ProcessName"] = proc.group(1)
+                if port:
+                    details["LocalPort"] = int(port.group(1))
+                current["details"] = details
                 items.append(current)
         elif line.startswith("Motivo:") and current is not None:
             m = re.match(r"^Motivo: (.*?) \[allowlist: (.*)\]$", line)
@@ -225,8 +255,8 @@ def ingest_audit(folder: Path, force: bool = False) -> dict[str, int]:
                 conn.execute(
                     """INSERT INTO threats (signature, type, severity, description,
                                            mitre_technique, mitre_tactic, mitre_url,
-                                           first_seen, last_seen, occurrences, status)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'open')""",
+                                           first_seen, last_seen, occurrences, status, details)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'open', ?)""",
                     (
                         sig,
                         t.get("ThreatType") or t.get("type") or "",
@@ -237,6 +267,7 @@ def ingest_audit(folder: Path, force: bool = False) -> dict[str, int]:
                         t.get("MitreUrl") or "",
                         seen_at,
                         seen_at,
+                        json.dumps(t.get("Details") or {}, ensure_ascii=False),
                     ),
                 )
             else:
@@ -280,8 +311,8 @@ def ingest_audit(folder: Path, force: bool = False) -> dict[str, int]:
                 new_count += 1
                 conn.execute(
                     """INSERT INTO threats (signature, type, severity, description,
-                                           first_seen, last_seen, occurrences, status, note)
-                       VALUES (?, ?, ?, ?, ?, ?, 1, 'false_positive', ?)""",
+                                           first_seen, last_seen, occurrences, status, note, details)
+                       VALUES (?, ?, ?, ?, ?, ?, 1, 'false_positive', ?, ?)""",
                     (
                         sig,
                         sup["type"],
@@ -290,6 +321,7 @@ def ingest_audit(folder: Path, force: bool = False) -> dict[str, int]:
                         seen_at,
                         seen_at,
                         sup.get("reason", "") + " [allowlist: " + sup.get("allowlist_id", "") + "]",
+                        json.dumps(sup.get("details") or {}, ensure_ascii=False),
                     ),
                 )
             else:
@@ -435,7 +467,158 @@ def set_status(signature: str, status: str, note: str = "") -> Optional[dict[str
                FROM threats WHERE signature = ?""",
             (signature,),
         ).fetchone()
-    return dict(updated)
+
+    # El triage tiene efecto real: un falso positivo se traduce en una regla para la
+    # proxima auditoria, y reabrirlo retira esa regla. Si no, el triage es decorativo.
+    if status == "false_positive":
+        entry = derive_allowlist_entry(signature, note)
+    elif status in ("open", "investigating", "accepted", "resolved"):
+        remove_allowlist_entry(f"fp-{signature.lower()}")
+        entry = None
+    else:
+        entry = None
+    return dict(updated) | {"allowlist_entry": entry}
+
+
+def _threat_details(signature: str) -> dict[str, Any]:
+    with connect() as conn:
+        row = conn.execute("SELECT details FROM threats WHERE signature = ?", (signature,)).fetchone()
+    if not row or not row["details"]:
+        return {}
+    try:
+        data = json.loads(row["details"])
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def derive_allowlist_entry(signature: str, reason: str = "") -> Optional[dict[str, Any]]:
+    """Cierra el circulo: un hallazgo marcado como falso positivo genera una entrada.
+
+    Sin esto, marcar algo como FP en la UI no tiene efecto en la siguiente auditoria
+    y el ruido vuelve en la proxima ejecucion.
+    """
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT signature, type, description FROM threats WHERE signature = ?",
+            (signature,),
+        ).fetchone()
+    if row is None:
+        return None
+
+    details = _threat_details(signature)
+    process = details.get("ProcessName") or details.get("Name") or ""
+    ports = sorted({int(p) for p in (details.get("RemotePort"), details.get("LocalPort"), details.get("Port")) if p and int(p) > 0})
+    path = details.get("ProcessPath") or details.get("Path") or ""
+
+    if not process and not ports:
+        return None
+
+    entry_id = f"fp-{signature.lower()}"
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    reason = reason or f"Marcado como falso positivo en el triage: {row['description']}"
+    with _LOCK, connect() as conn:
+        conn.execute(
+            """INSERT INTO allowlist (id, threat_type, process, path, ports, reason, source, signature, created_at, active)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+               ON CONFLICT(id) DO UPDATE SET
+                   threat_type = excluded.threat_type,
+                   process = excluded.process,
+                   path = excluded.path,
+                   ports = excluded.ports,
+                   reason = excluded.reason,
+                   active = 1""",
+            (entry_id, row["type"], process, path, json.dumps(ports), reason, "triage", signature, now),
+        )
+    return {
+        "id": entry_id,
+        "threat_type": row["type"],
+        "process": process,
+        "path": path,
+        "ports": ports,
+        "reason": reason,
+        "source": "triage",
+        "signature": signature,
+    }
+
+
+def add_allowlist_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    ports = sorted({int(p) for p in (entry.get("ports") or []) if int(p) > 0})
+    if not entry.get("process") and not ports:
+        raise ValueError("La entrada de allowlist necesita un proceso o un puerto")
+    entry_id = entry.get("id") or f"manual-{uuid.uuid4().hex[:8]}"
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with _LOCK, connect() as conn:
+        conn.execute(
+            """INSERT INTO allowlist (id, threat_type, process, path, ports, reason, source, signature, created_at, active)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)""",
+            (
+                entry_id,
+                entry.get("threat_type", ""),
+                entry.get("process", ""),
+                entry.get("path", ""),
+                json.dumps(ports),
+                entry.get("reason", "allowlist manual"),
+                entry.get("source", "manual"),
+                entry.get("signature"),
+                now,
+            ),
+        )
+    return {
+        "id": entry_id,
+        "threat_type": entry.get("threat_type", ""),
+        "process": entry.get("process", ""),
+        "path": entry.get("path", ""),
+        "ports": ports,
+        "reason": entry.get("reason", "allowlist manual"),
+        "source": entry.get("source", "manual"),
+        "created_at": now,
+    }
+
+
+def list_allowlist(active_only: bool = True) -> list[dict[str, Any]]:
+    with connect() as conn:
+        if active_only:
+            rows = conn.execute("SELECT * FROM allowlist WHERE active = 1 ORDER BY created_at DESC").fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM allowlist ORDER BY created_at DESC").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["ports"] = json.loads(d.get("ports") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            d["ports"] = []
+        out.append(d)
+    return out
+
+
+def remove_allowlist_entry(entry_id: str) -> bool:
+    with _LOCK, connect() as conn:
+        cur = conn.execute("DELETE FROM allowlist WHERE id = ?", (entry_id,))
+    return cur.rowcount > 0
+
+
+def write_allowlist_file(path: Path) -> dict[str, Any]:
+    """Escribe la allowlist derivada del triage en el JSON que lee Invoke-SecurityAudit.ps1.
+
+    El script PowerShell la fusiona con su allowlist built-in: aqui solo van las
+    entradas generadas por el triage, no las built-in.
+    """
+    entries = [
+        {
+            "id": e["id"],
+            "threatTypes": [e["threat_type"]] if e["threat_type"] else [],
+            "ports": e["ports"],
+            "process": e["process"],
+            "path": e["path"],
+            "reason": e["reason"],
+        }
+        for e in list_allowlist()
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"entries": entries}, indent=2, ensure_ascii=False), encoding="utf-8")
+    return {"entries": len(entries), "path": str(path)}
 
 
 def audit_context(audit_id: str) -> dict[str, Any]:

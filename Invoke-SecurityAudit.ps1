@@ -495,13 +495,16 @@ function Load-ExternalAllowlist {
         $added = 0
         foreach ($e in $entries) {
             if (-not $e.Process -and -not $e.Ports) { continue }
-            $entry = @{}
-            $entry.Id          = if ($e.Id) { [string]$e.Id } else { "external-$added" }
-            $entry.ThreatTypes = if ($e.ThreatTypes) { @($e.ThreatTypes) } else { @() }
-            $entry.Ports       = if ($e.Ports) { @($e.Ports) } else { @() }
-            $entry.Process     = if ($e.Process) { [string]$e.Process } else { "" }
-            $entry.Path        = if ($e.Path) { [string]$e.Path } else { "" }
-            $entry.Reason      = if ($e.Reason) { [string]$e.Reason } else { "allowlist externa" }
+            # Ojo: asignar `if (...) { @(...) }` a una clave de hashtable unrolla el
+            # array y deja un String. Se materializan primero las variables.
+            $entry = @{
+                Id          = if ($e.Id) { [string]$e.Id } else { "external-$added" }
+                ThreatTypes = @([string[]]@($e.ThreatTypes))
+                Ports       = @([int[]]@($e.Ports))
+                Process     = [string]$e.Process
+                Path        = [string]$e.Path
+                Reason      = if ($e.Reason) { [string]$e.Reason } else { "allowlist externa" }
+            }
             $Global:Allowlist += $entry
             $added++
         }
@@ -544,7 +547,7 @@ function Add-ThreatDetection {
             AllowlistId    = $allowed.Id
             Reason         = $allowed.Reason
         }
-        Write-AuditLog "  [ALLOWLIST] Suprimida '$ThreatType' ($allowed.Id): $Description" -Level INFO
+        Write-AuditLog "  [ALLOWLIST] Suprimida '$ThreatType' por $($allowed.Id): $($allowed.Reason)" -Level INFO
         return
     }
     
@@ -2146,6 +2149,19 @@ function Invoke-DetectionSelfTest {
         $results += Check -Suite "Allowlist" -Case $label -Expected $c.Expected -Actual $hit
     }
 
+    # --- 6b. Reglas derivadas del triage (-AllowlistPath) deben valer por si solas ---
+    if ($AllowlistPath) {
+        $external = @($Global:Allowlist | Where-Object { $_.Id -like 'fp-*' -or $_.Id -like 'manual-*' })
+        $saved = $Global:Allowlist
+        $Global:Allowlist = $external   # aisla: comprueba que la regla externa matchea sola
+        foreach ($e in $external) {
+            $d = [PSCustomObject]@{ ProcessName = $e.Process; LocalPort = ($e.Ports | Select-Object -First 1) }
+            $hit = [bool](Test-AllowedByAllowlist -ThreatType $e.ThreatTypes[0] -Description "test" -Details $d)
+            $results += Check -Suite "AllowlistExterna" -Case $e.Id -Expected $true -Actual $hit
+        }
+        $Global:Allowlist = $saved
+    }
+
     # --- 7. Deduplicacion y firma estable ---
     $Global:ThreatsDetected = @()
     $Global:ThreatKeys = New-Object System.Collections.Generic.HashSet[string]
@@ -2178,6 +2194,9 @@ function Invoke-DetectionSelfTest {
 # 
 
 if ($SelfTest) {
+    # La allowlist externa tambien se carga en el selftest: permite comprobar que las
+    # reglas derivadas del triage matchean antes de correr una auditoria real.
+    Load-ExternalAllowlist -Path $AllowlistPath
     exit (Invoke-DetectionSelfTest)
 }
 

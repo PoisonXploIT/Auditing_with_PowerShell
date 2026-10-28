@@ -15,6 +15,7 @@ async function renderBaseline() {
   try {
     const base = await api("/api/baseline");
     const threats = await api("/api/threats?limit=300");
+    const allow = await api("/api/allowlist");
 
     const kpis = [
       { cls: "neutral", label: "Auditorias indexadas", value: base.audits },
@@ -68,6 +69,23 @@ async function renderBaseline() {
       )
       .join("");
 
+    const allowRows = (allow.entries || [])
+      .map((e) => {
+        const ports = (e.ports || []).join(", ") || "-";
+        return (
+          "<tr>" +
+          '<td class="mono">' + esc(e.id) + "</td>" +
+          "<td>" + esc(e.threat_type || "-") + "</td>" +
+          '<td class="mono">' + esc(e.process || "-") + "</td>" +
+          '<td class="mono">' + ports + "</td>" +
+          '<td class="text-muted" style="font-size:12px">' + esc(e.reason || "") + "</td>" +
+          '<td class="mono">' + esc(e.source || "") + "</td>" +
+          '<td><button class="btn btn-ghost" data-del="' + esc(e.id) + '">Borrar</button></td>' +
+          "</tr>"
+        );
+      })
+      .join("");
+
     el.innerHTML =
       '<div class="card">' +
       '<div class="card-head"><span class="card-title">Baseline acumulada</span>' +
@@ -85,6 +103,13 @@ async function renderBaseline() {
       "<tbody>" + (rows || '<tr><td colspan="7" class="text-muted">Sin hallazgos indexados. Ejecute una auditoria.</td></tr>') + "</tbody>" +
       "</table></div></div>" +
       '<div class="card" style="margin-top:18px">' +
+      '<div class="card-head"><span class="card-title">Allowlist derivada del triage</span>' +
+      '<span class="card-sub">Un hallazgo marcado como falso positivo se convierte en regla para la siguiente auditoria</span></div>' +
+      '<div class="table-wrap"><table>' +
+      "<thead><tr><th>Id</th><th>Amenaza</th><th>Proceso</th><th>Puertos</th><th>Motivo</th><th>Origen</th><th></th></tr></thead>" +
+      "<tbody>" + (allowRows || '<tr><td colspan="7" class="text-muted">Sin entradas derivadas del triage. La allowlist built-in vive en el script PowerShell.</td></tr>') + "</tbody>" +
+      "</table></div></div>" +
+      '<div class="card" style="margin-top:18px">' +
       '<div class="card-head"><span class="card-title">Serie de ejecuciones</span></div>' +
       '<div class="table-wrap"><table>' +
       "<thead><tr><th>Auditoria</th><th>Inicio</th><th>Duracion</th><th>Amenazas</th><th>Suprimidas</th><th>Riesgo</th></tr></thead>" +
@@ -100,6 +125,18 @@ async function renderBaseline() {
           toast("Hallazgo marcado como " + STATUS_LABELS[sel.value], "success");
         } catch (e) {
           toast("No se pudo actualizar el estado: " + e.message, "error");
+        }
+      });
+    });
+
+    el.querySelectorAll("button[data-del]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await api("/api/allowlist/" + encodeURIComponent(btn.dataset.del), { method: "DELETE" });
+          toast("Entrada de allowlist eliminada", "success");
+          renderBaseline();
+        } catch (e) {
+          toast("No se pudo eliminar: " + e.message, "error");
         }
       });
     });

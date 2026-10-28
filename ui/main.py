@@ -435,7 +435,7 @@ def set_threat_status(signature: str, req: StatusRequest):
         raise HTTPException(status_code=400, detail=str(exc))
     if updated is None:
         raise HTTPException(status_code=404, detail="Hallazgo no encontrado en la baseline")
-    return updated
+    return {"threat": updated, "allowlist_entry": updated.get("allowlist_entry")}
 
 
 @app.post("/api/baseline/reingest")
@@ -770,6 +770,36 @@ def parse_recommendations(path: Path) -> list:
     return recs
 
 
+class AllowlistRequest(BaseModel):
+    id: Optional[str] = None
+    threat_type: str = ""
+    process: str = ""
+    path: str = ""
+    ports: list[int] = []
+    reason: str = ""
+
+
+@app.get("/api/allowlist")
+def get_allowlist():
+    """Reglas derivadas del triage (las built-in viven en el script PowerShell)."""
+    return {"entries": db.list_allowlist()}
+
+
+@app.post("/api/allowlist")
+def create_allowlist(req: AllowlistRequest):
+    try:
+        return db.add_allowlist_entry(req.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/api/allowlist/{entry_id}")
+def delete_allowlist(entry_id: str):
+    if not db.remove_allowlist_entry(entry_id):
+        raise HTTPException(status_code=404, detail="Entrada no encontrada")
+    return {"deleted": entry_id}
+
+
 # ---------------------------------------------------------------------------
 # Ejecucion de auditorias
 # ---------------------------------------------------------------------------
@@ -800,6 +830,14 @@ def run_audit(req: RunRequest):
     run_id = uuid.uuid4().hex[:12]
     status_file = _status_file(run_id)
 
+    # La allowlist generada por el triage se pasa al script: sin esto, marcar un FP
+    # en la UI no cambia nada en la siguiente ejecucion.
+    allowlist_file = RUNS_DIR / f"allowlist_{run_id}.json"
+    try:
+        db.write_allowlist_file(allowlist_file)
+    except OSError:
+        allowlist_file = None
+
     ps_args = [
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
@@ -808,13 +846,17 @@ def run_audit(req: RunRequest):
         "-ResultPath", str(RESULTS_DIR),
         "-StatusFile", str(status_file),
     ]
+    if allowlist_file:
+        ps_args += ["-AllowlistPath", str(allowlist_file)]
 
     if req.elevated:
         launcher = RUNS_DIR / f"launcher_{run_id}.ps1"
         launcher.write_text(
             "$launcherPath = $PSCommandPath\n"
             f"& '{SCRIPT_PATH}' -Headless -ResultPath '{RESULTS_DIR}' "
-            f"-StatusFile '{status_file}'\n"
+            f"-StatusFile '{status_file}'"
+            + (f" -AllowlistPath '{allowlist_file}'" if allowlist_file else "")
+            + "\n"
             "Remove-Item -LiteralPath $launcherPath -Force -ErrorAction SilentlyContinue\n",
             encoding="utf-8",
         )

@@ -64,6 +64,7 @@ THREATS = [
         "MitreTactic": "Persistence",
         "MitreUrl": "https://attack.mitre.org/techniques/T1547/001",
         "Signature": db.signature("Run Key sospechoso", "Run key 'X' (PID: 111) apunta a un script"),
+        "Details": {"Name": "powershell", "Path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"},
     },
     {
         "Timestamp": "2026-10-28 10:02:00",
@@ -152,6 +153,47 @@ class BaselineTests(unittest.TestCase):
         # Recurrentes: el hallazgo real y la supresion de la allowlist, que se repite
         # en ambas ejecuciones.
         self.assertEqual(base["recurring"], 2)
+
+    def test_false_positive_creates_allowlist_entry(self):
+        """El cierre del circulo: triage -> regla para la proxima auditoria."""
+        db.ingest_audit(self.audit)
+        sig = THREATS[0]["Signature"]
+        db.set_status(sig, "false_positive", "el run key es legitimo")
+        entry = db.derive_allowlist_entry(sig, "el run key es legitimo")
+        self.assertIsNotNone(entry)
+        entries = db.list_allowlist()
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["threat_type"], "Run Key sospechoso")
+        self.assertEqual(entries[0]["process"], "powershell")
+        self.assertEqual(entries[0]["source"], "triage")
+
+    def test_reopening_removes_allowlist_entry(self):
+        db.ingest_audit(self.audit)
+        sig = THREATS[0]["Signature"]
+        db.set_status(sig, "false_positive", "ruido")
+        db.derive_allowlist_entry(sig, "ruido")
+        self.assertEqual(len(db.list_allowlist()), 1)
+        db.set_status(sig, "open", "vuelve a aparecer")
+        self.assertEqual(len(db.list_allowlist()), 0)
+
+    def test_allowlist_file_matches_powershell_format(self):
+        db.ingest_audit(self.audit)
+        sig = THREATS[0]["Signature"]
+        db.set_status(sig, "false_positive", "ruido")
+        out = db.write_allowlist_file(self.tmp / "allowlist.json")
+        data = json.loads((self.tmp / "allowlist.json").read_text(encoding="utf-8"))
+        self.assertEqual(out["entries"], len(data["entries"]))
+        for e in data["entries"]:
+            # Invoke-SecurityAudit.ps1 espera Id, ThreatTypes, Ports, Process, Path, Reason.
+            for key in ("id", "threatTypes", "ports", "process", "path", "reason"):
+                self.assertIn(key, e)
+
+    def test_manual_entry_needs_process_or_port(self):
+        with self.assertRaises(ValueError):
+            db.add_allowlist_entry({"threat_type": "X", "reason": "sin criterio"})
+        self.assertEqual(len(db.list_allowlist()), 0)
+        db.add_allowlist_entry({"threat_type": "X", "process": "node", "reason": "dev local"})
+        self.assertEqual(len(db.list_allowlist()), 1)
 
     def test_forget_audits_removes_rows(self):
         db.ingest_audit(self.audit)
