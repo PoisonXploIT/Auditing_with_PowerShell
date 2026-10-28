@@ -212,8 +212,30 @@ function renderTable(data) {
 // Vistas
 // ---------------------------------------------------------------------------
 
-function setActiveView(view) {
+// La URL refleja la pestaña y la auditoria abierta: #/dashboard, #/audits,
+// #/run y #/audit/<id>. Sin esto, compartir o recargar una pestaña concreta
+// siempre devolvía al Panel General.
+const VIEWS = ["dashboard", "audits", "run"];
+
+function parseHash() {
+  const raw = (location.hash || "").replace(/^#\/?/, "");
+  if (!raw) return { view: "dashboard", auditId: null };
+  const parts = raw.split("/");
+  if (parts[0] === "audit" && parts[1]) {
+    return { view: "dashboard", auditId: decodeURIComponent(parts[1]) };
+  }
+  return { view: VIEWS.includes(parts[0]) ? parts[0] : "dashboard", auditId: null };
+}
+
+function setHash(view, auditId) {
+  const target = auditId ? `#/audit/${encodeURIComponent(auditId)}` : `#/${view}`;
+  if (location.hash !== target) location.hash = target;
+}
+
+function setActiveView(view, auditId) {
+  if (auditId) state.selectedAuditId = auditId;
   state.view = view;
+  setHash(view, view === "dashboard" ? state.selectedAuditId : null);
   document.querySelectorAll(".nav-item").forEach((b) => {
     b.classList.toggle("active", b.dataset.view === view);
   });
@@ -439,7 +461,7 @@ function aiCardHtml() {
       </div>
       <div class="flex" style="gap:8px;align-items:center;flex-wrap:wrap">
         <span class="mono text-muted" style="min-width:150px">Backend veredictos</span>
-        <select class="input mono" id="ai-backend" style="max-width:120px">
+        <select class="select mono" id="ai-backend" style="max-width:120px">
           <option value="cloud">cloud (Jev)</option>
           <option value="local">local (LAYA)</option>
         </select>
@@ -544,6 +566,7 @@ function bindDashboard(el, a) {
   if (select) {
     select.addEventListener("change", () => {
       state.selectedAuditId = select.value;
+      setHash("dashboard", state.selectedAuditId);
       renderDashboard();
     });
   }
@@ -753,8 +776,7 @@ async function renderAudits() {
 
   el.querySelectorAll("[data-open]").forEach((tr) => {
     tr.addEventListener("click", () => {
-      state.selectedAuditId = tr.dataset.open;
-      setActiveView("dashboard");
+      setActiveView("dashboard", tr.dataset.open);
     });
   });
 }
@@ -1000,6 +1022,13 @@ function bindNav() {
       setActiveView(b.dataset.view);
     });
   });
+  // Navegar con el hash (pegar una URL, atras, editar la dirección).
+  window.addEventListener("hashchange", () => {
+    const { view, auditId } = parseHash();
+    if (view !== state.view || (auditId && auditId !== state.selectedAuditId)) {
+      setActiveView(view, auditId);
+    }
+  });
   document.getElementById("btn-refresh").addEventListener("click", async () => {
     await loadAudits();
     if (state.view === "dashboard") renderDashboard();
@@ -1014,7 +1043,11 @@ async function init() {
     .then((c) => (document.getElementById("sidebar-version").textContent = "v" + c.version))
     .catch(() => {});
   await loadAudits();
-  setActiveView("dashboard");
+  const { view, auditId } = parseHash();
+  if (auditId && state.audits.some((a) => a.id === auditId)) {
+    state.selectedAuditId = auditId;
+  }
+  setActiveView(view);
 }
 
 document.addEventListener("DOMContentLoaded", init);
