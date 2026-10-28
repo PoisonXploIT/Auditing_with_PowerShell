@@ -1,9 +1,10 @@
-# Output files
-Auditoria_*/
+# Output files (solo los de la raiz; los fixtures de prueba si se versionan)
+/Auditoria_*/
 *.csv
 *.html
 *.json
 .runs/
+!ui/tests/fixtures/**/*.json
 
 # Interfaz web (ui/)
 ui/.venv/

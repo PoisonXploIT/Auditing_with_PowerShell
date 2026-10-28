@@ -1,0 +1,36 @@
+﻿{
+    "schema":  "audit-evidence/1",
+    "audit_id":  "Auditoria_SAMPLE",
+    "generated_at":  "2026-10-28 15:28:41",
+    "host":  "ANALISTA",
+    "elevated":  false,
+    "file_count":  4,
+    "total_bytes":  1100,
+    "root_sha256":  "eeeb07ea6c267374e90592049f4db1c28607c74db3ff37a2fcb9ba5d7f4da833",
+    "files":  [
+                  {
+                      "path":  "03_Procesos\\procesos.json",
+                      "sha256":  "4529311e4c0d0fb54b052ae8708c26a1878c15c762ed50d763e212cf29303dfe",
+                      "bytes":  73,
+                      "modified":  "2026-10-28 15:28:17"
+                  },
+                  {
+                      "path":  "04_Red\\conexiones.json",
+                      "sha256":  "9c86088f5f2dce81ad2fa4678db2795b4b045a1e003e40cceaba68d202b54f25",
+                      "bytes":  69,
+                      "modified":  "2026-10-28 15:28:40"
+                  },
+                  {
+                      "path":  "auditoria.log",
+                      "sha256":  "09759b3eceeb1d778772eb81db06eb3ff3e097dd5c2b4c4ac745a38d7f9adb26",
+                      "bytes":  177,
+                      "modified":  "2026-10-28 15:25:28"
+                  },
+                  {
+                      "path":  "RESUMEN_EJECUTIVO.txt",
+                      "sha256":  "5a900febc4a007ae11399a740f6c3978b9269fe5ca89d8eb7b40975eef5878b5",
+                      "bytes":  781,
+                      "modified":  "2026-10-28 15:25:28"
+                  }
+              ]
+}

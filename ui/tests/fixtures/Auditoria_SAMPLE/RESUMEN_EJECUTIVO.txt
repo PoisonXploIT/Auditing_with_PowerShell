@@ -1,0 +1,24 @@
+AUDITORIA DE SEGURIDAD EMPRESARIAL - RESUMEN EJECUTIVO
+Generado: 2026-10-28 12:00:00
+
+NIVEL DE RIESGO: BAJO
+Amenazas CRITICAS: 0
+Amenazas ALTAS: 0
+Amenazas BAJAS: 0
+
+AMENAZAS SUPRIMIDAS POR ALLOWLIST LOCAL
+
+Suprimidas: 1 (no cuentan en el nivel de riesgo)
+  - [MEDIUM] Puerto sospechoso en escucha | Puerto 9999 en escucha en 0.0.0.0 (proceso 'splunkd') [mitre: T1571]
+    Motivo: Splunk Enterprise local: 8088/9999 son Splunk Web y su API, no un C2 [allowlist: splunk-local]
+
+COBERTURA DE LA AUDITORIA
+
+Cobertura: PARCIAL (2 comprobaciones omitidas)
+  - Omision: Eventos de seguridad (sin privilegios de administrador)
+  - Omision: Drivers firmados (modulo no ejecutado)
+
+RECOMENDACIONES
+* Ejecutar auditoria nuevamente con privilegios de administrador
+
+Fin del Resumen Ejecutivo
