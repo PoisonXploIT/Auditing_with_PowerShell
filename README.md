@@ -499,6 +499,37 @@ cambie el PID.
 - `GET /api/audits/{id}/trend` — diff con la auditoría anterior: amenazas nuevas, resueltas y recurrentes.
 - La UI muestra una tarjeta "Tendencia frente a <anterior>" y otra con las suprimidas por allowlist.
 
+### Baseline en SQLite (`audit_baseline.db`)
+
+Las carpetas `Auditoria_*/` son el origen, pero no son memoria. Al arrancar, el backend
+indexa todas las auditorías en `audit_baseline.db` (se regenera con el botón "Reconstruir
+baseline" o `POST /api/baseline/reingest`):
+
+- `audits`: una fila por ejecución (riesgo, amenazas, suprimidas, duración).
+- `threats`: una fila por **firma única** — `first_seen`, `last_seen`, `occurrences`, `status`.
+- `audit_threats`: qué firma apareció en qué auditoría.
+
+Lo que la allowlist suprime también se registra (con su motivo) como `false_positive`: una
+supresión sin trazabilidad es un hallazgo que nadie revisa.
+
+Triage desde la pestaña **Baseline**:
+
+| Estado | Significado |
+|---|---|
+| `open` | Detectado y sin revisar |
+| `investigating` | Alguien lo está mirando |
+| `accepted` | Riesgo conocido, se tolera |
+| `false_positive` | Ruido (allowlist o triage manual) |
+| `resolved` | Ya no aparece |
+
+```powershell
+# API
+Invoke-RestMethod -Method Patch -Uri http://127.0.0.1:8502/api/threats/<firma>/status `
+  -Body '{"status":"investigating","note":"revisar splunk web"}'
+```
+
+Pruebas: `python -m unittest ui.tests.test_baseline` (8 casos, sin dependencias).
+
 ---
 
 ##  Solución de Problemas

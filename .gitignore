@@ -29,3 +29,8 @@ Desktop.ini
 *.suo
 *.user
 .venv/
+
+# Baseline SQLite
+audit_baseline.db
+audit_baseline.db-wal
+audit_baseline.db-shm

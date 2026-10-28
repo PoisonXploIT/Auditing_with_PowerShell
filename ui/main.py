@@ -27,6 +27,8 @@ from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 from fpdf import FPDF
 
+import db
+
 # ---------------------------------------------------------------------------
 # Rutas base
 # ---------------------------------------------------------------------------
@@ -221,6 +223,17 @@ def build_audit_meta(folder: Path) -> dict:
 app = FastAPI(title="Auditoria de Seguridad Empresarial", version="3.0")
 
 
+@app.on_event("startup")
+def _startup_baseline() -> None:
+    """Indexar las auditorias existentes al arrancar (idempotente por id)."""
+    db.init_db()
+    for folder in _audit_folders():
+        try:
+            db.ingest_audit(folder)
+        except Exception:
+            pass
+
+
 @app.get("/api/config")
 def get_config():
     return {
@@ -270,6 +283,7 @@ def cleanup_audits():
         )
 
     removed_folders = 0
+    removed_ids: list[str] = []
     removed_files = 0
     freed_bytes = 0
     if RESULTS_DIR.exists():
@@ -281,6 +295,7 @@ def cleanup_audits():
                     )
                     shutil.rmtree(child)
                     removed_folders += 1
+                    removed_ids.append(child.name)
                 except OSError:
                     pass
     for pattern in ("*.json", "launcher_*.ps1"):
@@ -292,12 +307,13 @@ def cleanup_audits():
             except OSError:
                 pass
 
+    db.forget_audits(removed_ids)
+
     return {
         "audits_removed": removed_folders,
         "run_files_removed": removed_files,
         "freed_mb": round(freed_bytes / (1024 * 1024), 2),
     }
-
 
 def _safe_audit_dir(audit_id: str) -> Optional[Path]:
     """Resuelve la carpeta de una auditoria validando prefijo y contencion (anti path traversal)."""
@@ -377,13 +393,55 @@ def compute_trend(folder: Path) -> dict:
         "risk_change": (prev_meta["risk_level"] if prev_meta["risk_level"] != cur_meta["risk_level"] else "sin cambio"),
     }
 
-
 @app.get("/api/audits/{audit_id}/trend")
 def audit_trend(audit_id: str):
     folder = _safe_audit_dir(audit_id)
     if folder is None:
         raise HTTPException(status_code=404, detail="Auditoria no encontrada")
-    return compute_trend(folder)
+    # El diff de carpetas dice que cambio entre dos ejecuciones; la base de datos
+    # dice desde cuando existe el hallazgo y si se repite.
+    result = compute_trend(folder)
+    result["baseline"] = db.audit_context(audit_id)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Baseline (SQLite)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/baseline")
+def get_baseline():
+    """Estado acumulado de todas las auditorias indexadas."""
+    return db.baseline()
+
+
+@app.get("/api/threats")
+def get_threats(status: Optional[str] = None, limit: int = 200):
+    """Hallazgos distincts con primera/ultima aparicion y numero de ocurrencias."""
+    return {"threats": db.threat_list(status=status, limit=limit)}
+
+
+class StatusRequest(BaseModel):
+    status: str
+    note: str = ""
+
+
+@app.patch("/api/threats/{signature}/status")
+def set_threat_status(signature: str, req: StatusRequest):
+    """Triage de un hallazgo: open, investigating, accepted, false_positive, resolved."""
+    try:
+        updated = db.set_status(signature, req.status.lower(), req.note)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Hallazgo no encontrado en la baseline")
+    return updated
+
+
+@app.post("/api/baseline/reingest")
+def reingest_baseline():
+    """Reconstruye la base desde las carpetas Auditoria_* (si se borro el .db)."""
+    return db.reingest_all(RESULTS_DIR)
 
 
 @app.get("/api/trend")
@@ -802,6 +860,16 @@ def get_run_status(run_id: str):
     finished = status.get("phase") in ("done", "error")
     if meta is not None and not finished:
         finished = meta["process"].poll() is not None and status.get("phase") in ("done", "error")
+
+    # Indexar la auditoria terminada en la baseline: sin esto la tendencia solo
+    # compara carpetas sueltas y se pierde al limpiar el historial.
+    if finished and status.get("phase") == "done" and status.get("auditPath"):
+        audit_folder = Path(str(status["auditPath"])).resolve()
+        if audit_folder.is_dir():
+            try:
+                db.ingest_audit(audit_folder)
+            except Exception:
+                pass
 
     return {"run_id": run_id, "status": status, "finished": finished}
 
