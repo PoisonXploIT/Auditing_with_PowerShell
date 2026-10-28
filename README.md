@@ -762,6 +762,33 @@ POST /api/sla/alert   -> evento audit:sla a Splunk HEC con los hallazgos vencido
 
 Un SLA que nadie notifica es un SLA que nadie cumple.
 
+### Adaptador al SOC de Opervanta (escrito, apagado)
+
+`ui/opervanta_soc.py` implementa el contrato del SOC: `PILOOP_SOC_DIR`,
+`eventos.jsonl` y severidades info/baja/media/alta/critica.
+
+```text
+POST /api/audits/{id}/soc   -> escribe el outbox del SOC si esta activado
+GET  /api/audits/{id}/soc   -> estado del adaptador
+GET  /api/integrations      -> incluye opervanta_soc
+```
+
+Mapeo: CRITICAL a critica, HIGH a alta, MEDIUM a media, LOW a baja, y los hallazgos
+suprimidos por allowlist a info (se declaran, no se ocultan). El `event_id` sale de la
+`Signature` del hallazgo, normalizada sin PID ni marcas de tiempo, de modo que el mismo
+hallazgo en dos ejecuciones da el mismo identificador. La correlacion es el `audit_id`.
+
+**No se activa**: `PILOOP_SOC_ENABLED` vale 0 por defecto. Los P0 de la auditoria
+integral de Opervanta (SEC-01 autorizacion de POST, SEC-02 escape de atributos, ID-01
+ultimo administrador, DATA-01 auditoria SQLite, SOC-01 antirreplay fail-open) no estan
+cerrados, y alimentar el SOC desde una consola cuya hermana tiene esos huecos amplifica
+la superficie en lugar de reducirla. Activarlo es una decision explicita del operador:
+`setx PILOOP_SOC_ENABLED "1"` y `setx PILOOP_SOC_DIR "C:\ruta\al\soc"`.
+
+El adaptador **no envia a Splunk**: Opervanta ya tiene su cola HEC con reintentos, y
+duplicar el envio crearia dos fuentes de verdad para el mismo evento. Un test lo
+verifica sustituyendo `_post_hec` por una funcion que lanza si se llama.
+
 ### Progreso en tiempo real (SSE)
 
 `GET /api/runs/{id}/stream` emite el estado solo cuando cambia y cierra al terminar.

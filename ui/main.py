@@ -35,6 +35,7 @@ import db
 import evidence
 import auth
 import integrations
+import opervanta_soc
 
 # ---------------------------------------------------------------------------
 # Rutas base
@@ -1351,7 +1352,10 @@ def admin_trail_export(request: Request, format: str = "csv", user: str = "", ac
 
 @app.get("/api/integrations")
 def integrations_status():
-    return integrations.integration_status()
+    return {
+        **integrations.integration_status(),
+        "opervanta_soc": opervanta_soc.status(),
+    }
 
 
 @app.get("/api/audits/{audit_id}/iocs")
@@ -1396,6 +1400,32 @@ def audit_to_splunk(audit_id: str, request: Request):
         f"{audit_id} -> {'ok' if result['ok'] else 'fallido'}",
     )
     return result
+
+
+@app.post("/api/audits/{audit_id}/soc")
+def audit_to_soc(audit_id: str, request: Request):
+    """Publicar los hallazgos al outbox del SOC de Opervanta.
+
+    Apagado por defecto (PILOOP_SOC_ENABLED=0) mientras los P0 de Opervanta no estan
+    cerrados. No toca Splunk: Opervanta ya tiene su cola HEC con reintentos.
+    """
+    folder = _safe_audit_dir(audit_id)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Auditoria no encontrada")
+    threats = load_threats(folder)
+    suppressed = build_audit_meta(folder)["suppressed"]
+    result = opervanta_soc.publish(audit_id, threats, suppressed)
+    auth.record_event(
+        getattr(request.state, "user", {}).get("username"),
+        "soc_publish",
+        f"{audit_id} -> {'ok' if result['enabled'] else 'no activo'} ({result['pending']} pendientes)",
+    )
+    return result
+
+
+@app.get("/api/audits/{audit_id}/soc")
+def audit_soc_status(audit_id: str):
+    return {"audit_id": audit_id, **opervanta_soc.status()}
 
 
 @app.get("/api/audits/{audit_id}/manifest")

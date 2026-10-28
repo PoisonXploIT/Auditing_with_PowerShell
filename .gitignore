@@ -4,6 +4,7 @@
 *.html
 *.json
 .runs/
+.soc/
 !ui/tests/fixtures/**/*.json
 
 # Interfaz web (ui/)

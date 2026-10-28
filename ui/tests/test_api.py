@@ -267,6 +267,19 @@ class EvidenceApiTests(unittest.TestCase):
         self.assertEqual(client.get("/api/audits/Auditoria_NO_EXISTE/manifest").status_code, 404)
         self.assertEqual(client.get("/api/audits/../etc/manifest").status_code, 404)
 
+    def test_adaptador_soc_no_activo_por_defecto(self):
+        """El SOC de Opervanta no se alimenta mientras sus P0 no estan cerrados."""
+        os.environ.pop("PILOOP_SOC_ENABLED", None)
+        r = client.post("/api/audits/Auditoria_SAMPLE/soc")
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertFalse(data["enabled"])
+        self.assertEqual(data["written"], 0)
+        self.assertGreater(data["pending"], 0)
+        status = client.get("/api/integrations").json()["opervanta_soc"]
+        self.assertFalse(status["enabled"])
+        self.assertIn("HEC", status["note"])
+
 
 class TrailAndExportTests(unittest.TestCase):
     """Registro de actividad filtrado/exportado y firma de los exports."""
