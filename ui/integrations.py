@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import ssl
 import urllib.error
 import urllib.request
 from datetime import datetime
@@ -24,8 +25,8 @@ PORT_RE = re.compile(r"puerto (\d+)", re.IGNORECASE)
 PROC_RE = re.compile(r"proceso '([^']+)'", re.IGNORECASE)
 
 
-def _env(name: str) -> Optional[str]:
-    value = os.environ.get(name, "").strip()
+def _env(name: str, default: str = "") -> Optional[str]:
+    value = os.environ.get(name, default).strip()
     return value or None
 
 
@@ -182,11 +183,21 @@ def push_to_splunk(audit_meta: dict[str, Any], threats: list[dict[str, Any]], ti
             data=payload,
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        # Splunk local viene con certificado autofirmado: sin esto, la conexion
+        # HTTPS falla por verificacion de cadena de confianza.
+        context = None
+        if _env("SPLUNK_HEC_INSECURE", "0").lower() in ("1", "true", "si", "yes"):
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+        with urllib.request.urlopen(req, timeout=timeout, context=context) as resp:
             body = resp.read().decode("utf-8")
         return {"ok": True, "status": resp.status, "response": json.loads(body) if body else {}}
     except (urllib.error.URLError, urllib.error.HTTPError, ValueError, TimeoutError) as exc:
-        return {"ok": False, "reason": f"Splunk no responde: {exc}"}
+        reason = f"Splunk no responde: {exc}"
+        if "certificate" in str(exc).lower() and not _env("SPLUNK_HEC_INSECURE"):
+            reason += ". Si Splunk es local con certificado autofirmado, define SPLUNK_HEC_INSECURE=1"
+        return {"ok": False, "reason": reason}
 
 
 # ---------------------------------------------------------------------------
