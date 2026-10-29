@@ -1,13 +1,10 @@
-"""Adaptador al SOC de Opervanta. Escrito, pero NO activado.
+r"""Adaptador al SOC de Opervanta.
 
-Condicion del plan: solo se enciende si los P0 de Opervanta estan cerrados. La
-auditoria integral (2026-10-21) deja P0 en autorizacion de POST (SEC-01), escape de
-atributos (SEC-02), ultimo administrador (ID-01), auditoria SQLite (DATA-01) y
-antirreplay fail-open (SOC-01). Mientras eso no este cerrado, publicar hallazgos de
-la auditoria en el SOC de Opervanta amplifica una superficie que aun no esta resuelta.
-
-Por eso `PILOOP_SOC_ENABLED` vale 0 por defecto: el codigo esta, los tests cubren el
-contrato, y activarlo es una decision explicita del operador.
+Estado (verificado 2026-10-29): los P0 de la auditoria integral de 2026-10-21 estan cerrados
+en el codigo desplegado (SEC-01, SEC-02, ID-01, DATA-01 y SOC-01 con modo estricto activo), y la
+conexion se probó de punta a punta contra la instancia real. Aun asi `PILOOP_SOC_ENABLED` vale 0
+por defecto: el codigo esta, los tests cubren el contrato y activarlo es una decision explicita
+del operador.
 
 Contrato real del ingress (verificado contra C:\Opervanta\buzon\httpd.py y
 buzon/soc.py, 2026-10-28):
@@ -273,7 +270,7 @@ def publish(audit_id: str, threats: list[dict[str, Any]],
             "enabled": False,
             "sent": 0,
             "pending": len(events),
-            "reason": "PILOOP_SOC_ENABLED=0: el adaptador al SOC de Opervanta no esta activo (P0 abiertos)",
+            "reason": "PILOOP_SOC_ENABLED=0: el adaptador al SOC de Opervanta no esta activo.",
         }
 
     if not alerta_secret():
