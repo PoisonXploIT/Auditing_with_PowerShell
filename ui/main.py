@@ -36,6 +36,7 @@ import evidence
 import auth
 import integrations
 import opervanta_soc
+import opervanta_watch
 
 # ---------------------------------------------------------------------------
 # Rutas base
@@ -1469,6 +1470,39 @@ def audit_to_soc(audit_id: str, request: Request):
 @app.get("/api/audits/{audit_id}/soc")
 def audit_soc_status(audit_id: str):
     return {"audit_id": audit_id, **opervanta_soc.status()}
+
+
+@app.post("/opervanta/evento")
+async def opervanta_evento(request: Request):
+    """Direccion B: Opervanta publica su actividad aqui, firmado v2 (igual que /alerta).
+
+    Sin session de navegador: la autenticacion es la firma HMAC. Con OPERVANTA_WATCH_ENABLED=0
+    el endpoint no existe (404)."""
+    if not opervanta_watch.activo():
+        raise HTTPException(status_code=404, detail="not found")
+    sensor = request.headers.get("X-Piloop-Alerta-Sensor", "")
+    ts = request.headers.get("X-Piloop-Alerta-Ts", "")
+    nonce = request.headers.get("X-Piloop-Alerta-Nonce", "")
+    digest = request.headers.get("X-Piloop-Alerta-Hmac", "")
+    cuerpo = await request.body()
+    ok, motivo = opervanta_watch.verificar(sensor, ts, nonce, digest, cuerpo)
+    if not ok:
+        raise HTTPException(status_code=401, detail=motivo)
+    try:
+        evento = json.loads(cuerpo.decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="cuerpo no es JSON")
+    r = opervanta_watch.guardar(evento)
+    if not r["ok"]:
+        raise HTTPException(status_code=400, detail=r["motivo"])
+    return {"ok": True, "guardados": r["guardados"]}
+
+
+@app.get("/opervanta/eventos")
+def opervanta_eventos(tipo: str = "", n: int = 100):
+    if not opervanta_watch.activo():
+        raise HTTPException(status_code=404, detail="not found")
+    return {"eventos": opervanta_watch.listar(n=max(1, min(n, 500)), tipo=tipo)}
 
 
 @app.get("/api/audits/{audit_id}/manifest")
