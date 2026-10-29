@@ -50,7 +50,7 @@ function esc(v) {
 }
 
 function csrfToken() {
-  if (window.csrfToken) return window.csrfToken;
+  if (window.__csrf) return window.__csrf;
   const match = document.cookie.match(/(?:^|;\s*)audit_csrf=([^;]+)/);
   return match ? match[1] : "";
 }
