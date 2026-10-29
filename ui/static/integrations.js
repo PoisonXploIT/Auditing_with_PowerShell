@@ -6,6 +6,7 @@ async function renderIntegrations() {
   const el = document.getElementById("view-integrations");
   try {
     const status = await api("/api/integrations");
+    const soc = status.opervanta_soc || {};
     const auditId = state.selectedAuditId || (state.audits[0] && state.audits[0].id);
 
     const statusRow = (name, s) =>
@@ -83,6 +84,21 @@ async function renderIntegrations() {
       statusRow("MITRE Navigator", status.navigator) +
       "</tbody></table></div></div>" +
       '<div class="card" style="margin-top:18px">' +
+      '<div class="card-head"><span class="card-title">Opervanta SOC</span>' +
+      '<span class="card-sub">Publica los hallazgos en el SOC de Opervanta por el ingress firmado</span></div>' +
+      '<div class="flex" style="gap:8px;align-items:center;flex-wrap:wrap">' +
+      '<span class="badge ' + (soc.enabled ? "low" : "medium") + '">' + (soc.enabled ? "activado" : "apagado") + "</span>" +
+      '<span class="mono text-muted">' + esc(soc.url || "-") + "</span>" +
+      '<span class="text-muted">sensor ' + esc(soc.sensor || "-") + "</span>" +
+      '<span class="text-muted">' + (soc.secret_defined ? "secreto definido" : "sin secreto") + "</span>" +
+      '<span class="text-muted">' + (soc.strict_mode ? "estricto" : "laxo") + "</span>" +
+      "</div>" +
+      (soc.enabled
+        ? '<button class="btn btn-primary" style="margin-top:10px" data-soc>Publicar hallazgos en el SOC</button>' +
+          '<span class="text-muted" id="soc-result"></span>'
+        : '<div class="text-muted" style="margin-top:6px">Activa PILOOP_SOC_ENABLED=1 y define el secreto para publicar.</div>') +
+      "</div>" +
+      '<div class="card" style="margin-top:18px">' +
       '<div class="card-head"><span class="card-title">Indicadores (IOCs) de ' + esc(auditId || "—") + "</span>" +
       '<span class="card-sub">IP, puertos, procesos y rutas derivados de los hallazgos</span></div>' +
       iocBlock + "</div>" +
@@ -120,6 +136,22 @@ async function renderIntegrations() {
         try {
           const r = await api("/api/audits/" + encodeURIComponent(auditId) + "/splunk", { method: "POST" });
           out.textContent = r.ok ? "Enviado a Splunk (HTTP " + r.status + ")" : "No enviado: " + r.reason;
+        } catch (e) {
+          out.textContent = "Error: " + e.message;
+        }
+      });
+    }
+
+    const socBtn = el.querySelector("[data-soc]");
+    if (socBtn) {
+      socBtn.addEventListener("click", async () => {
+        const out = el.querySelector("#soc-result");
+        out.textContent = "Publicando...";
+        try {
+          const r = await api("/api/audits/" + encodeURIComponent(auditId) + "/soc", { method: "POST" });
+          out.textContent = r.ok
+            ? "Publicado (" + (r.sent || 0) + " eventos" + (r.pending ? ", " + r.pending + " pendientes" : "") + ")"
+            : "No publicado: " + (r.reason || r.motivo || "?");
         } catch (e) {
           out.textContent = "Error: " + e.message;
         }
