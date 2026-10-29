@@ -216,6 +216,18 @@ class ApiTests(unittest.TestCase):
             for method in methods:
                 if method == "GET":
                     continue
+                if url in main.HMAC_GATED_PATHS:
+                    # Ingress maquina: no tiene sesion ni cookie, su puerta es la firma HMAC.
+                    # Con origen ajeno debe morir antes de mirar la firma (403), y sin firma
+                    # no se acepta (401/404). En ningun caso un 200.
+                    r = client.request(method, url, headers={"Origin": "https://evil.example"},
+                                       content=b"")
+                    self.assertEqual(r.status_code, 403,
+                                     f"{method} {url} no cierra el origen ajeno ({r.status_code})")
+                    r = client.request(method, url, content=b"")
+                    self.assertIn(r.status_code, (401, 404),
+                                  f"{method} {url} acepta sin firma ({r.status_code})")
+                    continue
                 r = client.request(method, url, headers={"Origin": "https://evil.example"}, content=b"")
                 self.assertEqual(
                     r.status_code, 403,

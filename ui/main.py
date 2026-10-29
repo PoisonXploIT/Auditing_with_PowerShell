@@ -1,5 +1,5 @@
 """
-Auditoria de Seguridad Empresarial - Interfaz Web (v3.0)
+Auditoria de Seguridad Empresarial - Interfaz Web (v4.0)
 
 Backend FastAPI que sirve la interfaz de la auditoria de seguridad.
 Permite visualizar auditorias generadas y ejecutar nuevas auditorias
@@ -234,7 +234,7 @@ def build_audit_meta(folder: Path) -> dict:
 # App
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="Auditoria de Seguridad Empresarial", version="3.0")
+app = FastAPI(title="Auditoria de Seguridad Empresarial", version="4.0")
 
 
 @app.on_event("startup")
@@ -254,7 +254,7 @@ def _startup_baseline() -> None:
 @app.get("/api/config")
 def get_config():
     return {
-        "version": "3.0",
+        "version": "4.0",
         "results_dir": str(RESULTS_DIR),
         "script_path": str(SCRIPT_PATH),
         "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -605,7 +605,7 @@ def download_audit_json(audit_id: str):
     meta["recommendations"] = parse_recommendations(folder / "RESUMEN_EJECUTIVO.txt")
     payload = {
         "formato": "security-audit-export",
-        "version": "3.0",
+        "version": "4.0",
         "generado": datetime.now().isoformat(),
         "auditoria": meta,
     }
@@ -1236,7 +1236,7 @@ class LoginRequest(BaseModel):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "3.0"}
+    return {"status": "ok", "version": "4.0"}
 
 
 @app.post("/api/auth/login")
@@ -1589,6 +1589,12 @@ CSRF_HEADER = "X-CSRF-Token"
 # El login no puede exigir token: el token se obtiene al iniciar sesion.
 CSRF_EXEMPT_PATHS = {"/api/auth/login"}
 
+# Ingress maquina-maquina (direccion B del pack Opervanta): el emisor no tiene sesion ni cookie,
+# su puerta es la firma HMAC v2 (sin OPERVANTA_WATCH_SECRET no se acepta nada, y con
+# OPERVANTA_WATCH_ENABLED=0 la ruta ni existe). Se sigue comprobando el Origin/Referer para que
+# una pagina ajena no pueda colarse por el navegador.
+HMAC_GATED_PATHS = {"/opervanta/evento"}
+
 
 def _request_origin(request) -> str:
     origin = request.headers.get("origin", "")
@@ -1612,11 +1618,13 @@ class SecurityMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request, call_next):
-        if request.method in MUTATION_METHODS and request.url.path.startswith("/api/"):
+        if request.method in MUTATION_METHODS and (
+                request.url.path.startswith("/api/") or request.url.path in HMAC_GATED_PATHS
+        ):
             origin = _request_origin(request)
             if origin and origin not in ALLOWED_ORIGINS:
                 return JSONResponse(status_code=403, content={"detail": "Origen no autorizado (CSRF)"})
-            if request.url.path not in CSRF_EXEMPT_PATHS:
+            if request.url.path not in CSRF_EXEMPT_PATHS and request.url.path not in HMAC_GATED_PATHS:
                 header = request.headers.get(CSRF_HEADER, "")
                 cookie = request.cookies.get(CSRF_COOKIE, "")
                 if not header or not cookie or not hmac.compare_digest(header, cookie):
