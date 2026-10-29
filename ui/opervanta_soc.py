@@ -99,6 +99,20 @@ def alerta_secret() -> str:
     return ""
 
 
+def _field(threat: dict[str, Any], *names: str) -> str:
+    """Leer un campo admitiendo la grafia de PowerShell (`Severity`) y la normalizada (`severity`).
+
+    El adaptador se alimenta de `load_threats`, que ya normaliza, pero un llamador directo
+    (una prueba, un script, una integracion futura) puede pasar el JSON tal cual sale de
+    `Invoke-SecurityAudit`. Aceptar ambas evita que un HIGH se registre como `baja`.
+    """
+    for name in names:
+        value = threat.get(name)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
 def to_soc_severity(severity: str, suppressed: bool = False) -> str:
     if suppressed:
         return "info"
@@ -112,7 +126,7 @@ def event_id(threat: dict[str, Any]) -> str:
     detectado en dos ejecuciones produce el mismo event_id: el SOC puede deduplicar
     sin depender de cuando se ejecuto la auditoria.
     """
-    signature = (threat.get("signature") or "").strip()
+    signature = _field(threat, "signature", "Signature").strip()
     if signature:
         return signature.upper()
     norm = f"{threat.get('type', '')}|{threat.get('description', '')}".lower()
@@ -130,11 +144,11 @@ def build_events(audit_id: str, threats: list[dict[str, Any]],
                 "event_id": event_id(threat),
                 "correlation_id": audit_id,
                 "source": "Invoke-SecurityAudit",
-                "severity": to_soc_severity(threat.get("severity", "LOW")),
-                "type": threat.get("type") or "",
-                "description": threat.get("description") or "",
-                "mitre_technique": threat.get("mitre_technique") or "",
-                "mitre_tactic": threat.get("mitre_tactic") or "",
+                "severity": to_soc_severity(_field(threat, "severity", "Severity", "severity_raw")),
+                "type": _field(threat, "type", "Type"),
+                "description": _field(threat, "description", "Description", "Details", "details"),
+                "mitre_technique": _field(threat, "mitre_technique", "MitreTechnique", "mitre"),
+                "mitre_tactic": _field(threat, "mitre_tactic", "MitreTactic"),
                 "suppressed": False,
                 "observed_at": threat.get("timestamp") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
@@ -148,12 +162,12 @@ def build_events(audit_id: str, threats: list[dict[str, Any]],
                 "correlation_id": audit_id,
                 "source": "Invoke-SecurityAudit",
                 "severity": "info",
-                "type": item.get("type") or "",
-                "description": item.get("description") or "",
-                "mitre_technique": item.get("mitre_technique") or item.get("mitre") or "",
-                "mitre_tactic": item.get("mitre_tactic") or "",
+                "type": _field(item, "type", "Type"),
+                "description": _field(item, "description", "Description", "Details", "details"),
+                "mitre_technique": _field(item, "mitre_technique", "MitreTechnique", "mitre", "Mitre"),
+                "mitre_tactic": _field(item, "mitre_tactic", "MitreTactic"),
                 "suppressed": True,
-                "reason": item.get("reason") or "allowlist local",
+                "reason": _field(item, "reason", "Reason", "rule", "Rule"),
                 "observed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
         )

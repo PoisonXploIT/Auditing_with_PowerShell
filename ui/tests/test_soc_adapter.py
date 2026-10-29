@@ -130,6 +130,22 @@ class SocAdapterTests(unittest.TestCase):
             self.assertRegex(event["event_id"], r"^[0-9A-F]{16}$")
             self.assertEqual(event["correlation_id"], "Auditoria_X")
 
+    def test_acepta_las_claves_de_powershell(self):
+        """PowerShell emite `Severity`, `Type`, `Signature`, `Details`.
+
+        Si el adaptador solo lee claves en minusculas, un HIGH llega como `baja` y la
+        Signature se ignora: el SOC tria el hallazgo con la severidad equivocada y no
+        puede deduplicar. El adaptador debe aceptar ambas grafias.
+        """
+        raw = [{"Severity": "HIGH", "Type": "Puerto sospechoso en escucha",
+                "Signature": "E2E-PAQUETE-0001", "Details": "4444 en escucha"}]
+        eventos = opervanta_soc.build_events("Auditoria_E2E", raw)
+        self.assertEqual(len(eventos), 1)
+        self.assertEqual(eventos[0]["severity"], "alta")
+        self.assertEqual(eventos[0]["event_id"], "E2E-PAQUETE-0001")
+        self.assertEqual(eventos[0]["type"], "Puerto sospechoso en escucha")
+        self.assertEqual(eventos[0]["description"], "4444 en escucha")
+
     def test_sin_secreto_no_envia_nada(self):
         """Fail closed: sin secreto no se publica, y no se escribe en el SOC a mano."""
         self._enable()
