@@ -71,6 +71,7 @@ def verificar(sensor: str, ts: str, nonce: str, digest: str, cuerpo: bytes) -> t
 def _nonce_visto(nonce: str, ts: int) -> bool:
     """Anti-replay: guarda {nonce: ts}; rechaza si ya se uso. Fail-closed si el almacen falla."""
     try:
+        WATCH_DIR.mkdir(parents=True, exist_ok=True)
         datos = {}
         if NONCES.exists():
             datos = json.loads(NONCES.read_text(encoding="utf-8"))
