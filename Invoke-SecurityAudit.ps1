@@ -1,7 +1,7 @@
 <#
 
                     SCRIPT DE AUDITORIA DE SEGURIDAD EMPRESARIAL                       
-                                VERSION 3.0 - PROFESIONAL                                
+                                VERSION 4.0 - PROFESIONAL                                 
 
 
 .SYNOPSIS
@@ -22,11 +22,11 @@
 
 .NOTES
     Autor: Equipo de Ciberseguridad
-    Version: 3.0
-    Fecha: 16 de septiembre de 2026
+    Version: 4.0
+    Fecha: 29 de octubre de 2026
     Requisitos: PowerShell 5.1+, Windows 10/Server 2016+
     Privilegios: Se recomienda ejecutar como Administrador para auditoria completa
-    Interfaz: v3.0 incluye interfaz web (carpeta ui/) y modo headless para automatizacion
+    Interfaz: la consola web (carpeta ui/) y el modo headless para automatizacion
 
 .EXAMPLE
     .\Auditoria_Empresarial_Completa.ps1
@@ -61,7 +61,7 @@ param(
 $ErrorActionPreference = "Continue"
 
 # Variables globales del script
-$Global:ScriptVersion = "3.0"
+$Global:ScriptVersion = "4.0"
 $Global:Headless = $Headless.IsPresent
 $Global:StatusFile = $StatusFile
 $Global:ResultPath = $ResultPath

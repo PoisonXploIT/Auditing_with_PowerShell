@@ -39,9 +39,9 @@ $servers | ForEach-Object {
 }
 ```
 
-### Método 4: Interfaz Web (v3.0)
+### Método 4: Interfaz Web (v4.0)
 
-La versión 3.0 incluye una interfaz web para visualizar auditorías existentes y ejecutar nuevas auditorías con progreso en vivo.
+La consola web (carpeta `ui/`) permite visualizar auditorías existentes, ejecutar nuevas con progreso en vivo y ver la actividad recibida de Opervanta.
 
 ```powershell
 # 1. Crear entorno virtual e instalar dependencias
@@ -960,6 +960,14 @@ Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy RemoteSigned
 ---
 
 ##  Changelog
+
+### Versión 4.0 (2026-10-29)
+- **Integridad de la evidencia**: `MANIFEST_EVIDENCIA.json` con root SHA-256, verificación en `POST /api/audits/{id}/verify`, exports firmados con sidecar `.sig` y pie del PDF con el SHA-256 del cuerpo
+- **Medición, no suposición**: cobertura MITRE (`coverage_report` por severidad) y ruido de cada regla de la allowlist (`Get-AllowlistImpact` + salud de reglas: activable / inerte / inválida), expuestos en la UI
+- **Auth y CSRF**: token de doble submission en todas las mutaciones, bootstrap del admin desde hash scrypt (`bootstrap_admin.py --rotate`), roles y bloqueo de cuenta
+- **Splunk HEC**: ingesta de eventos `audit:sla` y `piloop:evento` verificada contra un HEC real
+- **Opervanta (pack)**: publicación de hallazgos al SOC (`ui/opervanta_soc.py`, firma v2) e ingress propio `POST /opervanta/evento` (`ui/opervanta_watch.py`) con anti-replay y vista "Opervanta" en la consola
+- **Selftest de detección**: 126 casos (regex, LOLBAS, puertos, MITRE, allowlist, impacto de reglas)
 
 ### Versión 3.0 (2026-09-16)
 - Interfaz web (FastAPI + JS vanilla) para visualizar auditorías y ejecutar nuevas con progreso en vivo

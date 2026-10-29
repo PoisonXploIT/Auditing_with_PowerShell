@@ -20,6 +20,9 @@ __pycache__/
 *.ps1xml
 ModuleCatalog.xml
 
+# Estado de ejecucion de la consola (eventos de Opervanta, nonces de anti-replay)
+data/
+
 # OS
 Thumbs.db
 Desktop.ini
