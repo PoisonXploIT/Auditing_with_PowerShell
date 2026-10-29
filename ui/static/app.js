@@ -235,7 +235,7 @@ function renderTable(data) {
 // La URL refleja la pestaña y la auditoria abierta: #/dashboard, #/audits,
 // #/run y #/audit/<id>. Sin esto, compartir o recargar una pestaña concreta
 // siempre devolvía al Panel General.
-const VIEWS = ["dashboard", "audits", "run", "baseline", "integrations", "admin"];
+const VIEWS = ["dashboard", "audits", "run", "baseline", "integrations", "opervanta", "admin"];
 
 function parseHash() {
   const raw = (location.hash || "").replace(/^#\/?/, "");
@@ -268,6 +268,7 @@ function setActiveView(view, auditId) {
     run: "Nueva Auditoria",
     baseline: "Baseline",
     integrations: "Integraciones",
+    opervanta: "Opervanta",
     admin: "Administracion",
   };
   document.getElementById("topbar-title").textContent = titles[view] || "Security Audit";
@@ -277,6 +278,7 @@ function setActiveView(view, auditId) {
   if (view === "run") renderRun();
   if (view === "baseline") renderBaseline();
   if (view === "integrations") renderIntegrations();
+  if (view === "opervanta") renderOpervanta();
   if (view === "admin") renderAdmin();
 }
 
